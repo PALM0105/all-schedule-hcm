@@ -1,0 +1,11 @@
+﻿search_origin,origin_port,destination_port,departure_date,arrival_date,transit_days,vessel,voyage,code,closing
+Bangkok,Bangkok : PAT1,Ho Chi Minh City,2026-09-05,2026-09-08,3วัน,SITC SHUNDE,2619N,,2026/09/03 18:00
+Laem Chabang,Laem Chabang : LCIT C3,Ho Chi Minh City,2026-09-06,2026-09-08,2วัน,SITC SHUNDE,2619N,,2026/09/04 24:00
+Bangkok,Bangkok : PAT1,Ho Chi Minh City,2026-09-12,2026-09-15,3วัน,ZHONG GU NAN HAI,2635N,,2026/09/10 18:00
+Laem Chabang,Laem Chabang : LCIT C3,Ho Chi Minh City,2026-09-13,2026-09-15,2วัน,ZHONG GU NAN HAI,2635N,,2026/09/11 24:00
+Bangkok,Bangkok : PAT1,Ho Chi Minh City,2026-09-19,2026-09-22,3วัน,SITC HAINAN,2623N,,2026/09/17 18:00
+Laem Chabang,Laem Chabang : LCIT C3,Ho Chi Minh City,2026-09-20,2026-09-22,2วัน,SITC HAINAN,2623N,,2026/09/18 24:00
+Bangkok,Bangkok : PAT1,Ho Chi Minh City,2026-09-26,2026-09-29,3วัน,ASL TAIPEI,2637N,,2026/09/24 18:00
+Laem Chabang,Laem Chabang : LCIT C3,Ho Chi Minh City,2026-09-27,2026-09-29,2วัน,ASL TAIPEI,2637N,,2026/09/25 24:00
+Bangkok,Bangkok : PAT1,Ho Chi Minh City,2026-10-03,2026-10-06,3วัน,SITC XIN,2623N,,2026/10/01 18:00
+Laem Chabang,Laem Chabang : LCIT C3,Ho Chi Minh City,2026-10-04,2026-10-06,2วัน,SITC XIN,2623N,,2026/10/02 24:00
