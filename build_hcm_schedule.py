@@ -1032,9 +1032,11 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         comp, mine = comp_day.get(d, []), own_day.get(d, [])
         fl = {id(f["x"]): f for f in flagged if f["etd"] == d}
         lv = level(len(comp), len(mine))
+        # every HAL sailing that day is sold out -> the competitors cannot take anything from us: no risk
+        covered = bool(mine) and all(space_level(space_for(m)) == "FULL" for m in mine)
         if lv or fl:
-            day_info[d] = {"lv": lv, "comp": comp, "mine": mine, "fl": fl}
-    n_high = sum(1 for v in day_info.values() if v["lv"] == 2)
+            day_info[d] = {"lv": lv, "comp": comp, "mine": mine, "fl": fl, "covered": covered}
+    n_high = sum(1 for v in day_info.values() if v["lv"] == 2 and not v["covered"])
 
     def label_of(f):
         if f["urgent"]:
@@ -1087,8 +1089,8 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         nu = sum(1 for f in fl_w if f["urgent"])
         ns = sum(1 for f in fl_w if not f["urgent"] and not f["full"] and not f["unver"])
         nf = sum(1 for f in fl_w if f["full"])
-        nh = sum(1 for d in days_w if day_info[d]["lv"] == 2)
-        nw = sum(1 for d in days_w if day_info[d]["lv"] == 1)
+        nh = sum(1 for d in days_w if day_info[d]["lv"] == 2 and not day_info[d]["covered"])
+        nw = sum(1 for d in days_w if day_info[d]["lv"] == 1 and not day_info[d]["covered"])
         bits = [f"{nu} urgent", f"{ns} sell first"] + ([f"{nf} full"] if nf else []) + \
                [f"{nh} high-competition day{'s' if nh != 1 else ''}", f"{nw} watch"]
         note = " &middot; ".join(bits) if days_w else "all clear"
@@ -1103,7 +1105,8 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             info = day_info[d]
             urgent_day = any(f["urgent"] for f in info["fl"].values())
             bg = "#fef2f2" if urgent_day else "#ffffff"
-            lv_pill = (pill("HIGH", "#dc2626") if info["lv"] == 2 else pill("WATCH", "#d97706")
+            lv_pill = (pill("COVERED", "#15803d") if info["covered"] and info["lv"] else
+                       pill("HIGH", "#dc2626") if info["lv"] == 2 else pill("WATCH", "#d97706")
                        if info["lv"] == 1 else "")
             hal = ("".join(hal_cell(m, info["fl"].get(id(m))) for m in sorted(info["mine"], key=lambda m: port(m)))
                    or "<b style='color:#dc2626'>No HAL sailing</b>")
