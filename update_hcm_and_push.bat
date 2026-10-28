@@ -29,6 +29,7 @@ echo Pushed OK >> update_log.txt
 :mail
 set DRAFT=
 if "%HCM_MAIL_DRAFT%"=="1" set DRAFT=-DraftOnly
+"%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe" svms_space.py < nul >> update_log.txt 2>&1
 "%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe" build_hcm_schedule.py --mail-body %RESULT% < nul >> update_log.txt 2>&1
 if errorlevel 1 (
   echo MAIL BODY FAILED >> update_log.txt

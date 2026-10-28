@@ -856,6 +856,49 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         if own(x) and x.get("etd_date"):
             own_by_vessel.setdefault((x.get("vessel") or "").upper(), []).append(x)
 
+    # space (BSA) per vessel / port / ETD from SVMS; ignored when missing or older than 36 h
+    space_rows = []
+    space_ok = False
+    try:
+        sp_file = json.loads((OUT_DIR / "space.json").read_text(encoding="utf-8"))
+        if now - dt.datetime.fromisoformat(sp_file["generated"]) <= dt.timedelta(hours=36):
+            space_rows, space_ok = sp_file["rows"], True
+    except (OSError, ValueError, KeyError):
+        pass
+
+    def space_for(x):
+        """SVMS space row of this HAL sailing: same vessel name and port, nearest ETD within 36 h"""
+        try:
+            etd_dt = dt.datetime.strptime((x.get("etd") or "")[:16], "%Y-%m-%d %H:%M")
+        except ValueError:
+            etd_dt = dt.datetime.combine(dt.date.fromisoformat(x["etd_date"]), dt.time(12))
+        best = None
+        for r in space_rows:
+            if r["vessel"] != (x.get("vessel") or "").upper() or r["port"] != port(x) or not r.get("etd"):
+                continue
+            gap = abs(dt.datetime.strptime(r["etd"], "%Y%m%d%H%M") - etd_dt)
+            if gap <= dt.timedelta(hours=36) and (best is None or gap < best[0]):
+                best = (gap, r)
+        return best[1] if best else None
+
+    def space_level(r):
+        """FULL / NEARLY FULL / SPACE LEFT from balance = BSA - TEU on board after this port"""
+        if not r:
+            return None
+        bal, bsa = r["balance"], r["bsa"] or 0
+        if bal <= 0:
+            return "FULL"
+        return "NEARLY FULL" if bal <= max(10, 0.10 * bsa) else "SPACE LEFT"
+
+    def space_tag(r):
+        lv = space_level(r)
+        if not lv:
+            return ""
+        col = {"FULL": "#dc2626", "NEARLY FULL": "#d97706", "SPACE LEFT": "#15803d"}[lv]
+        txt = {"FULL": f"over by {-r['balance']} TEU" if r["balance"] < 0 else "no space left",
+               "NEARLY FULL": f"{r['balance']} TEU left", "SPACE LEFT": f"{r['balance']} TEU free"}[lv]
+        return f" <b style='color:{col};font-size:12px'>{lv}</b><span style='color:#64748b;font-size:12px'> ({txt})</span>"
+
     def share_note(x):
         """carriers that sell this sailing besides HAL ("shared with ...") as small grey text"""
         others = [c for c in x["carriers"] if c != "HAL"]
@@ -879,6 +922,9 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         r_close = left is not None and left <= dt.timedelta(days=3)
         if not (r_comp or r_close):
             continue
+        sp = space_for(x)
+        full = space_level(sp) == "FULL"
+        r_space = bool(r_close and sp and sp["balance"] >= max(40, 0.25 * (sp["bsa"] or 0)))
         why = []
         if r_comp:
             why.append(f"{len(near)} competitor sailings from {port(x)} within &plusmn;1 day")
@@ -886,7 +932,10 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             hrs = int(left.total_seconds() // 3600)
             when = f"{dfmt(cut)} {cut:%H:%M}"
             why.append(f"cargo cut-off in {hrs} h ({when})" if hrs < 48 else f"cargo cut-off {when}")
-        flagged.append({"x": x, "etd": etd, "port": port(x), "why": why, "urgent": r_comp and r_close,
+        if r_space:
+            why.append(f"closing soon but <b>{sp['balance']} TEU still free</b> &ndash; push sales now")
+        flagged.append({"x": x, "etd": etd, "port": port(x), "why": why, "full": full, "sp": sp,
+                        "urgent": (not full) and ((r_comp and r_close) or r_space),
                         "also": [c for c in x["carriers"] if c != "HAL"]})
 
     groups = []                                     # same vessel, both ports (ETDs within 3 days) -> one row
@@ -897,9 +946,10 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         else:
             groups.append({"vessel": f["x"]["vessel"], "items": [f]})
     for g in groups:
+        g["full"] = all(i["full"] for i in g["items"])
         g["urgent"] = any(i["urgent"] for i in g["items"])
         g["etd"] = min(i["etd"] for i in g["items"])
-    groups.sort(key=lambda g: (wstart(g["etd"]), not g["urgent"], g["etd"]))
+    groups.sort(key=lambda g: (wstart(g["etd"]), g["full"], not g["urgent"], g["etd"]))
     n_urgent = sum(1 for g in groups if g["urgent"])
 
     FONT = "font-family:Segoe UI,Arial,sans-serif"
@@ -922,17 +972,20 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
     for ws in week_starts:
         wg = [g for g in groups if wstart(g["etd"]) == ws]
         nu = sum(1 for g in wg if g["urgent"])
-        note = (f"{nu} urgent &middot; {len(wg) - nu} sell first" if wg else "all clear")
+        nf = sum(1 for g in wg if g["full"])
+        note = (f"{nu} urgent &middot; {len(wg) - nu - nf} sell first" + (f" &middot; {nf} full" if nf else "")
+                if wg else "all clear")
         sell_rows += week_row(ws, 3, note, "#7f1d1d" if nu else "#0f172a")
         if not wg:
             sell_rows += clear_row(3, "No HAL sailing needs special attention this week.")
         for g in wg:
             bg = "#fef2f2" if g["urgent"] else "#ffffff"
-            badge = pill("URGENT", "#dc2626") if g["urgent"] else pill("SELL FIRST", "#d97706")
+            badge = (pill("URGENT", "#dc2626") if g["urgent"] else pill("FULL", "#64748b") if g["full"]
+                     else pill("SELL FIRST", "#d97706"))
             also = sorted({c for i in g["items"] for c in i["also"]})
             lines = "".join(
-                f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b> &ndash; "
-                f"{'; '.join(i['why'])}</div>" for i in g["items"])
+                f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b>"
+                f"{space_tag(i['sp'])} &ndash; {'; '.join(i['why'])}</div>" for i in g["items"])
             sell_rows += (
                 f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
                 f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
@@ -979,7 +1032,7 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             others = share_note(m)
             tag = f"shared with {', '.join(others)}" if others else "HAL only"
             return (f"<div style='margin-bottom:4px'><b>{m['vessel']}</b> ({port(m)}) "
-                    f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span></div>")
+                    f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{space_tag(space_for(m))}</div>")
 
         comp_txt = "".join(comp_line(c) for c in sorted(comp, key=lambda c: (c["vessel"], port(c))))
         mine_txt = ("".join(mine_line(m) for m in mine) if mine
@@ -1043,8 +1096,12 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         f"<p style='{FONT};color:#64748b;font-size:12px;border-top:1px solid #e2e8f0;padding-top:10px'>{data}<br>"
         "How sailings are picked: SELL FIRST = 4+ competitor sailings leave the same port within &plusmn;1 day, "
         "or the cargo cut-off is within 3 days; URGENT = both (sailings already past cut-off are left out). "
-        "Competitor = a vessel HAL cannot book. HAL's own cut-off data was collected on 13 Sep and may be incomplete."
-        "<br>Automatic message from the HCM schedule updater.</p></div>")
+        "Competitor = a vessel HAL cannot book. HAL's own cut-off data was collected on 13 Sep and may be incomplete. "
+        + ("Space tags come from SVMS: space left = allocated TEU (BSA) minus TEU on board after loading at that port; "
+           "FULL = nothing left, NEARLY FULL = 10% or less of the allocation left; URGENT also covers ships closing "
+           "within 3 days that still have 25%+ of the allocation free."
+           if space_ok else "Space data (SVMS) was not available this run, so no FULL / SPACE LEFT tags are shown.")
+        + "<br>Automatic message from the HCM schedule updater.</p></div>")
     if result == "failed":
         subject = f"[HCM] Update FAILED - {dfmt(today)}"
     else:
