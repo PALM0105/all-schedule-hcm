@@ -2178,8 +2178,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--start", default=today.replace(day=1).isoformat(),
                     help="start date YYYY-MM-DD (default: the 1st of the current month)")
-    ap.add_argument("--end", default=dt.date(today.year, 12, 31).isoformat(),
-                    help="end date YYYY-MM-DD (default: 31 Dec of the current year)")
+    ap.add_argument("--end", default=(dt.date(today.year + (today.month >= 11), (today.month + 1) % 12 + 1, 1)
+                                       - dt.timedelta(days=1)).isoformat(),
+                    help="end date YYYY-MM-DD (default: the last day of NEXT month, i.e. this month + next month)")
     ap.add_argument("--only", default="", help="use only some sources, e.g. --only sitc,tslines")
     ap.add_argument("--skip", default="", help="skip some sources, e.g. --skip sjj,hal")
     ap.add_argument("--offline", action="store_true",
