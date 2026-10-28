@@ -512,6 +512,8 @@ def fetch_jj(start: dt.date, end: dt.date) -> list[dict]:
 
 
 KMTC_DIR = HERE / "KMTC"
+NAMSUNG_DIR = HERE / "NAMSUNG"
+HMM_DIR = HERE / "HMM"
 
 
 def _kmtc_ts(s: str) -> str | None:
@@ -581,7 +583,7 @@ def _kmtc_live(start: dt.date, end: dt.date) -> list[dict]:
     return out
 
 
-def fetch_namsung(start: dt.date, end: dt.date) -> list[dict]:
+def _namsung_live(start: dt.date, end: dt.date) -> list[dict]:
     import requests
     m = _load_module("namsung_schedule", "namsung_schedule.py")
     session = requests.Session()
@@ -607,7 +609,67 @@ def fetch_namsung(start: dt.date, end: dt.date) -> list[dict]:
     return out
 
 
-def fetch_hmm(start: dt.date, end: dt.date) -> list[dict]:
+def _namsung_from_files() -> list[dict]:
+    """
+    Namsung rows saved in NAMSUNG/*.txt. ebiz.namsung.co.kr blocks scripted access from this network (Akamai 403), so
+    the rows were collected through a normal Chrome browser (the same /sch/selectScheList call the web page makes).
+    Columns: origin(B/L)|vessel|voyage|ETD|ETA|direct(D)/ts|CY cutoff|doc cutoff
+    """
+    out = []
+    for f in sorted(NAMSUNG_DIR.glob("*.txt")) if NAMSUNG_DIR.is_dir() else []:
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            p = line.split("|")
+            if len(p) < 8:
+                continue
+            o, vessel, voyage, etd_s, eta_s, ts, cy, doc = (x.strip() for x in p[:8])
+            etd, eta = _kmtc_ts(etd_s), _kmtc_ts(eta_s)
+            out.append(_rec(
+                "Namsung", carrier="Namsung", vessel=vessel, voyage=voyage,
+                pol="Bangkok" if o == "B" else "Laem Chabang", pod=POD_NAME,
+                etd=etd, eta=eta, transit_days=_days_between(etd, eta),
+                direct_or_ts="Direct" if not ts or ts.lower().startswith("d") else "T/S",
+                cy_cutoff=_kmtc_ts(cy), doc_cutoff=_kmtc_ts(doc),
+            ))
+    return out
+
+
+def fetch_namsung(start: dt.date, end: dt.date) -> list[dict]:
+    try:
+        return _namsung_live(start, end)
+    except SourceBlocked:
+        recs = _namsung_from_files()
+        if recs:
+            return recs
+        raise
+
+
+def _hmm_from_files() -> list[dict]:
+    """
+    HMM rows saved in HMM/*.txt (hmm21.com resets scripted connections; collected through a normal Chrome browser).
+    Columns: origin port|vessel|voyage|ETD|ETA|transit/type|route|inland cut-off|port cut-off|doc cut-off
+    """
+    out = []
+    for f in sorted(HMM_DIR.glob("*.txt")) if HMM_DIR.is_dir() else []:
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.startswith("#"):
+                continue
+            p = line.split("|")
+            if len(p) < 10:
+                continue
+            org, vessel, voyage, etd, eta, tt, route, inland, port_cut, doc = (x.strip() for x in p[:10])
+            out.append(_rec(
+                "HMM", carrier="HMM", service=route, vessel=vessel, voyage=voyage,
+                pol="Bangkok" if "BANGKOK" in org.upper() else "Laem Chabang", pod=POD_NAME,
+                etd=etd, eta=eta, transit_days=_days_between(etd, eta),
+                direct_or_ts="Direct" if "direct" in tt.lower() else "T/S",
+                cy_cutoff=port_cut, doc_cutoff=doc,
+            ))
+    return out
+
+
+def _hmm_live(start: dt.date, end: dt.date) -> list[dict]:
     import requests
     try:
         requests.get("https://www.hmm21.com/", timeout=8, headers={"User-Agent": "Mozilla/5.0"})
@@ -616,6 +678,16 @@ def fetch_hmm(start: dt.date, end: dt.date) -> list[dict]:
             "hmm21.com resets / times out connections from this network (HTTP/2 protocol error, connection reset)") from exc
     raise RuntimeError("hmm21.com is reachable again, but raw-data/hmm_schedule.py only dumps raw table rows -- "
                        "it needs a parser before HMM can be merged")
+
+
+def fetch_hmm(start: dt.date, end: dt.date) -> list[dict]:
+    try:
+        return _hmm_live(start, end)
+    except RuntimeError:                      # SourceBlocked is a RuntimeError; so is "needs a parser"
+        recs = _hmm_from_files()
+        if recs:
+            return recs
+        raise
 
 
 SOURCES = {
@@ -633,6 +705,8 @@ SOURCES = {
 # Shown in the dashboard footer and the Sources sheet of the Excel file
 SOURCE_NOTES = {
     "kmtc": "ekmtc.com blocks scripted access from this network, so the rows come from KMTC/*.txt (collected 2026-10-28 through a normal Chrome browser); a live pull is used automatically when it works",
+    "namsung": "ebiz.namsung.co.kr blocks scripted access from this network (Akamai 403), so the rows come from NAMSUNG/*.txt (collected 2026-10-28 through a normal Chrome browser); a live pull is used automatically when it works",
+    "hmm": "hmm21.com resets scripted connections from this network, so the rows come from HMM/*.txt (collected 2026-10-28 through a normal Chrome browser; HMM sells only part of these sailings); a live pull is used automatically when it works",
     "hal": "static rows extracted from ebiz.heungaline.com on 2026-09-13 (not a live pull); every vessel on HAL's page counts as bookable via HAL",
     "ckline": "only vessels CK Line can book (own + chartered fleet); other carriers' vessels on es.ckline.co.kr are left out",
     "sjj": "JJ Shipping only publishes about the next 5 weeks",
@@ -1021,7 +1095,7 @@ tr.c-off,tr.c-off + tr.details{display:none !important}
 .tip .ot td.on{color:#b45309;font-size:10.5px;border-top:0;padding-top:0}
 .tip .note{color:#b45309;font-size:10.5px;margin:-3px 0 8px}
 .topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
-.banner{--hz:100px;position:relative;height:calc(var(--hz) + 170px);border-radius:18px;overflow:hidden;
+.banner{--hz:100px;position:relative;height:calc(var(--hz) + 194px);border-radius:18px;overflow:hidden;
         margin:0 0 6px;color:#fff;box-shadow:0 10px 30px rgba(7,52,99,.28);isolation:isolate;
         background:linear-gradient(180deg,#0a2a66 0%,#1561b8 48%,#4cb2ee 100%)}
 .banner .bn-sun{position:absolute;left:58%;top:6px;width:150px;height:150px;border-radius:50%;z-index:0;
@@ -1827,7 +1901,7 @@ def _banner(merged, statuses, start, end, gen) -> str:
     """Header banner: one ship per carrier racing from Bangkok / Laem Chabang to Ho Chi Minh City (pure CSS animation)."""
     names = [n for n in SOURCE_META if any(n in m["carriers"] for m in merged)]
     # finishing order (fixed, shuffled) and the wobble of each ship's pace so the lead keeps changing
-    others = iter([2, 5, 1, 7, 3, 6, 4])             # finishing places of the other carriers (fixed, shuffled)
+    others = iter([2, 5, 1, 7, 3, 6, 4, 8, 9])           # finishing places of the other carriers (fixed, shuffled)
     ks = [3, 2, 3, 1, 2, 3, 1, 2]                    # wobble of each ship's pace, so the lead keeps changing
     amps = [.10, .09, .08, .12, .09, .10, .08, .11]
     kf, ships = [], []

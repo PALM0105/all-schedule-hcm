@@ -16,9 +16,11 @@ if (Test-Path $cache) {
     $merged = $c.merged
     $watch = $c.watch_html
     foreach ($s in $c.statuses) {
+        $label = $s.Status
         $color = if ($s.Status -eq "ok") { "#15803d" } else { "#b91c1c" }
+        if ($s.Status -eq "ok" -and $s.Detail -match "not a live pull|\.txt") { $label = "ok (saved data)"; $color = "#b45309" }
         if ($s.Status -ne "ok") { $bad += $s.Source }
-        $rows += "<tr><td style='padding:3px 12px 3px 0'>$($s.Source)</td><td style='padding:3px 12px 3px 0;color:$color'><b>$($s.Status)</b></td><td style='padding:3px 0'>$($s.Sailings) sailings</td></tr>"
+        $rows += "<tr><td style='padding:3px 12px 3px 0'>$($s.Source)</td><td style='padding:3px 12px 3px 0;color:$color'><b>$label</b></td><td style='padding:3px 0'>$($s.Sailings) sailings</td></tr>"
     }
 }
 
