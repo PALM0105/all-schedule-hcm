@@ -895,8 +895,9 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         if not lv:
             return ""
         col = {"FULL": "#dc2626", "NEARLY FULL": "#d97706", "SPACE LEFT": "#15803d"}[lv]
-        txt = {"FULL": f"over by {-r['balance']} TEU" if r["balance"] < 0 else "no space left",
-               "NEARLY FULL": f"{r['balance']} TEU left", "SPACE LEFT": f"{r['balance']} TEU free"}[lv]
+        bal = r["balance"]
+        gap = f"over by {-bal} TEU" if bal < 0 else ("no space left" if bal == 0 else f"{bal} TEU left")
+        txt = f"{r['rob']} of {r['bsa']} TEU on board &middot; {gap}"
         return f" <b style='color:{col};font-size:12px'>{lv}</b><span style='color:#64748b;font-size:12px'> ({txt})</span>"
 
     def share_note(x):
