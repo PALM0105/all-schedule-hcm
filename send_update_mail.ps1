@@ -32,7 +32,7 @@ $total = if ($merged) { "<p><b>$merged</b> sailings after merging duplicate vess
 
 $body = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px'>$lead$total" +
         "<table style='border-collapse:collapse'>$rows</table>$note" +
-        "<p><a href='$url'>Open the dashboard</a><br><span style='color:#64748b'>$url</span></p>" +
+        "<p>The dashboard is attached as an HTML file (open it in a browser; the Refresh button only works when started with run_hcm_dashboard.bat).<br><a href='$url'>Or open it online</a><br><span style='color:#64748b'>$url</span></p>" +
         "<p style='color:#94a3b8;font-size:12px'>Automatic message from the HCM schedule updater.</p></div>"
 
 $ol = New-Object -ComObject Outlook.Application
@@ -40,4 +40,11 @@ $m = $ol.CreateItem(0)
 $m.To = $To
 $m.Subject = $subject
 $m.HTMLBody = $body
+# attach the dashboard page itself (self-contained: opens by double-click, no server needed)
+$page = Join-Path $here "output\hcm_schedule_dashboard.html"
+if ((Test-Path $page) -and $Result -ne "failed") {
+    $copy = Join-Path $env:TEMP ("HCM_Schedule_" + (Get-Date -Format "yyyy-MM-dd") + ".html")
+    Copy-Item $page $copy -Force
+    [void]$m.Attachments.Add($copy)
+}
 if ($DraftOnly) { $m.Save(); "saved draft: $subject" } else { $m.Send(); "sent: $subject" }
