@@ -1044,7 +1044,7 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
                         + ", ".join(f"{port(m)} {dt.date.fromisoformat(m['etd_date']).day} "
                                     f"{dt.date.fromisoformat(m['etd_date']):%b}" for m in hal_too[:3])
                         + "</b>") if hal_too else ""
-            return (f"<div style='margin-bottom:4px'><b>{c['vessel']}</b> ({port(c)}){voy_html(c)} "
+            return (f"<div style='margin-bottom:4px'><b>{c['vessel']}</b> ({port(c)}) "
                     f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{hal_note}</div>")
 
         def mine_line(m):
