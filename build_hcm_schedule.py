@@ -931,7 +931,7 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         lv = space_level(r)
         if not lv:
             return ""
-        col = {"FULL": "#dc2626", "NEARLY FULL": "#d97706", "SPACE LEFT": "#15803d"}[lv]
+        col = {"FULL": "#15803d", "NEARLY FULL": "#d97706", "SPACE LEFT": "#15803d"}[lv]   # full = sold out = no risk
         bal = r["balance"]
         if lv == "FULL":                              # how far over is not shown, only that it is full
             return f" <b style='color:{col};font-size:12px'>{lv}</b>"
