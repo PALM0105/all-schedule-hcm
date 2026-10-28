@@ -10,11 +10,12 @@ $url  = "https://palm0105.github.io/all-schedule-hcm/dashboard.html"
 $cache = Join-Path $here "output\_cache.json"
 $date = Get-Date -Format "dd MMM yyyy HH:mm"
 
-$rows = ""; $merged = ""; $watch = ""; $bad = @()
+$rows = ""; $merged = ""; $watch = ""; $sell = ""; $bad = @()
 if (Test-Path $cache) {
     $c = Get-Content $cache -Raw -Encoding UTF8 | ConvertFrom-Json
     $merged = $c.merged
     $watch = $c.watch_html
+    $sell = $c.sell_html
     foreach ($s in $c.statuses) {
         $label = $s.Status
         $color = if ($s.Status -eq "ok") { "#15803d" } else { "#b91c1c" }
@@ -33,7 +34,7 @@ $note = ""
 if ($bad.Count -gt 0) { $note = "<p style='color:#64748b'>Not available this run: $($bad -join ', ').</p>" }
 $total = if ($merged) { "<p><b>$merged</b> sailings after merging duplicate vessels.</p>" } else { "" }
 
-$body = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px'>$lead$total$watch" +
+$body = "<div style='font-family:Segoe UI,Arial,sans-serif;font-size:14px'>$lead$total$sell$watch" +
         "<h3 style='margin:18px 0 4px'>Data sources</h3><table style='border-collapse:collapse'>$rows</table>$note" +
         "<p>The dashboard is attached as an HTML file (open it in a browser; the Refresh button only works when started with run_hcm_dashboard.bat).<br><a href='$url'>Or open it online</a><br><span style='color:#64748b'>$url</span></p>" +
         "<p style='color:#94a3b8;font-size:12px'>Automatic message from the HCM schedule updater.</p></div>"

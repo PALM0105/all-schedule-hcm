@@ -866,6 +866,78 @@ def build_watch_html(merged: list[dict], today: dt.date, days: int = 14) -> str:
             "<th>HAL that day</th></tr>" + "".join(rows) + "</table>")
 
 
+def build_sell_html(merged: list[dict], now: dt.datetime, days: int = 14) -> str:
+    """HTML block for the daily mail: HAL's own sailings in the next `days` days that should be sold first,
+    because competitors sail within +-1 day of them and/or the cargo cut-off is close."""
+    def abbr(x):
+        return "BKK" if "bangkok" in (x.get("origin") or "").lower() else "LCH"
+
+    def is_own(x):
+        return "HAL" in x["carriers"] or (x.get("vessel") or "").upper().startswith("HEUNG")
+
+    def parse_cut(t):
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return dt.datetime.strptime((t or "").strip(), fmt)
+            except ValueError:
+                pass
+        return None
+
+    comp_by_day: dict[tuple, list[dict]] = {}          # (origin, date) -> competitor sailings from that port
+    for x in merged:
+        if x.get("etd_date") and not is_own(x):
+            comp_by_day.setdefault((abbr(x), dt.date.fromisoformat(x["etd_date"])), []).append(x)
+
+    today = now.date()
+    rows = []
+    for x in merged:
+        if not x.get("etd_date") or not is_own(x):
+            continue
+        etd = dt.date.fromisoformat(x["etd_date"])
+        if not (today <= etd <= today + dt.timedelta(days=days)):
+            continue
+        near = [c for d in (-1, 0, 1) for c in comp_by_day.get((abbr(x), etd + dt.timedelta(days=d)), [])]
+        # earliest known cargo cut-off still in the future (HAL's own figure first, else any carrier's)
+        offers = sorted(x["offers"], key=lambda o: o["source"] != "HAL")
+        cuts = [parse_cut(o.get("cy_cutoff")) for o in offers]
+        cut = next((c for c in cuts if c), None)
+        if cut and cut < now:
+            continue                                   # already closed: nothing left to sell
+        left = (cut - now) if cut else None
+        r_comp = len(near) >= 4
+        r_close = left is not None and left <= dt.timedelta(days=3)
+        if not (r_comp or r_close):
+            continue
+        reasons = []
+        if r_comp:
+            reasons.append(f"{len(near)} competitor sailings from {abbr(x)} within &plusmn;1 day")
+        if r_close:
+            hrs = int(left.total_seconds() // 3600)
+            reasons.append(f"cargo cut-off in {hrs} h ({cut.strftime('%a %d %b %H:%M')})" if hrs < 48
+                           else f"cargo cut-off {cut.strftime('%a %d %b %H:%M')}")
+        level = "URGENT" if (r_comp and r_close) else "SELL"
+        color = "#b91c1c" if level == "URGENT" else "#c2410c"
+        also = [c for c in x["carriers"] if c != "HAL"]
+        rows.append((etd, level, (
+            f"<tr style='vertical-align:top'>"
+            f"<td style='padding:5px 10px 5px 0;white-space:nowrap'><b>{etd.strftime('%a %d %b')}</b></td>"
+            f"<td style='padding:5px 10px 5px 0;color:{color}'><b>{level}</b></td>"
+            f"<td style='padding:5px 10px 5px 0'><b>{x['vessel']}</b> ({abbr(x)})"
+            + (f"<br><span style='color:#64748b'>also sold by {', '.join(also)}</span>" if also else "") +
+            f"</td><td style='padding:5px 0'>{'<br>'.join(reasons)}</td></tr>")))
+    head = (f"<h3 style='margin:18px 0 4px'>Sell first &ndash; HAL sailings at risk (next {days} days)</h3>"
+            "<p style='color:#64748b;margin:0 0 6px'>HAL's own sailings where 4+ competitor sailings leave the same port within "
+            "&plusmn;1 day, or the cargo cut-off is within 3 days. URGENT = both. Sailings whose cut-off has "
+            "already passed are left out. HAL's own cut-off data is from 13 Sep and can be incomplete.</p>")
+    if not rows:
+        return head + "<p>No HAL sailing needs special attention in this period.</p>"
+    rows.sort(key=lambda r: (r[0], r[1] != "URGENT"))
+    return (head + "<table style='border-collapse:collapse'>"
+            "<tr style='text-align:left;color:#64748b'><th style='padding:2px 10px 2px 0'>ETD</th>"
+            "<th style='padding:2px 10px 2px 0'>Level</th><th style='padding:2px 10px 2px 0'>HAL vessel</th>"
+            "<th>Why</th></tr>" + "".join(r[2] for r in rows) + "</table>")
+
+
 # --------------------------------------------------------------------------- #
 #  Export: Excel                                                              #
 # --------------------------------------------------------------------------- #
@@ -2272,6 +2344,7 @@ def main():
         {"start": start.isoformat(), "end": end.isoformat(),
          "records": records, "statuses": statuses, "merged": len(merged),
          "watch_html": build_watch_html(merged, dt.date.today()),
+         "sell_html": build_sell_html(merged, dt.datetime.now()),
          "generated": dt.datetime.now().isoformat()},
         ensure_ascii=False, indent=1), encoding="utf-8")
 
