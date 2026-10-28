@@ -452,9 +452,9 @@ def fetch_dongjin(start: dt.date, end: dt.date) -> list[dict]:
     return out
 
 
-def fetch_hal(start: dt.date, end: dt.date) -> list[dict]:
-    """HAL (Heung-A): rows extracted from ebiz.heungaline.com and kept in generate_hal_schedule.py
-    (the site blocks scripted access). Not a live pull -- see SOURCE_NOTES."""
+def _hal_static(skip_vessels=frozenset()) -> list[dict]:
+    """HAL rows extracted from ebiz.heungaline.com on 2026-09-13 (kept in generate_hal_schedule.py). Marked static;
+    vessels listed in `skip_vessels` (the ones SVMS knows) are left out."""
     import contextlib
     path = INPUT_DIR / "generate_hal_schedule.py"
     if not path.exists():
@@ -466,9 +466,12 @@ def fetch_hal(start: dt.date, end: dt.date) -> list[dict]:
                          ("Laem Chabang", getattr(mod, "laem_rows", []))):
         for r in rows:
             # [Service, Vessel, Voyage, POL - terminal, POD - terminal, ETD, ETA, Transit, DOCU closing, CNTR closing, Status]
+            if (r[1] or "").strip().upper() in skip_vessels:
+                continue
+
             def term(x):
                 return x.split(" - ", 1)[1] if x and " - " in x else x
-            out.append(_rec(
+            rec = _rec(
                 "HAL", carrier="HAL",
                 service=r[0], vessel=r[1], voyage=r[2],
                 pol=origin, pod=POD_NAME,
@@ -476,8 +479,42 @@ def fetch_hal(start: dt.date, end: dt.date) -> list[dict]:
                 etd=r[5], eta=r[6], transit_days=_days_between(r[5], r[6]),
                 doc_cutoff=r[8] if r[8] != "-" else None,
                 cy_cutoff=r[9] if r[9] != "-" else None,
-            ))
+            )
+            rec["static"] = rec["unverified"] = True
+            out.append(rec)
     return out
+
+
+def fetch_hal(start: dt.date, end: dt.date) -> list[dict]:
+    """HAL (Heung-A): HAL's own SVMS API (svms_space.py) -- live schedule, voyage and document cut-off of every
+    northbound sailing to Ho Chi Minh. Vessels that SVMS does not list at all (e.g. a partner's) keep the 13 Sep
+    snapshot of the ebiz page, marked 'unverified'. If SVMS is unreachable, a file younger than 36 h is used,
+    else the whole snapshot."""
+    rows = None
+    try:
+        import svms_space
+        try:
+            rows = svms_space.run(end=end, log=lambda *_: None)["schedule"]
+        except Exception:
+            rows = svms_space.load_schedule(36)
+    except ImportError:
+        pass
+    if not rows:
+        return _hal_static()
+    out = []
+    for r in rows:
+        etd, eta = _kmtc_ts(r["etd"]), _kmtc_ts(r.get("eta"))
+        rec = _rec(
+            "HAL", carrier="HAL", service=r["svc"], vessel=r["vessel"], voyage=r["voyage"],
+            pol="Bangkok" if r["port"] == "BKK" else "Laem Chabang", pod=POD_NAME,
+            pol_terminal=r.get("pol_terminal"), pod_terminal=r.get("pod_terminal"),
+            etd=etd, eta=eta, transit_days=_days_between(etd, eta), direct_or_ts="Direct",
+            doc_cutoff=_kmtc_ts(r.get("doc_close")),
+        )
+        rec["closed"] = bool(r.get("closed"))
+        out.append(rec)
+    known = {r["vessel"] for r in rows}
+    return out + _hal_static(skip_vessels=known)
 
 
 def fetch_jj(start: dt.date, end: dt.date) -> list[dict]:
@@ -707,7 +744,7 @@ SOURCE_NOTES = {
     "kmtc": "ekmtc.com blocks scripted access from this network, so the rows come from KMTC/*.txt (collected 2026-10-28 through a normal Chrome browser); a live pull is used automatically when it works",
     "namsung": "ebiz.namsung.co.kr blocks scripted access from this network (Akamai 403), so the rows come from NAMSUNG/*.txt (collected 2026-10-28 through a normal Chrome browser); a live pull is used automatically when it works",
     "hmm": "hmm21.com resets scripted connections from this network, so the rows come from HMM/*.txt (collected 2026-10-28 through a normal Chrome browser; HMM sells only part of these sailings); a live pull is used automatically when it works",
-    "hal": "static rows extracted from ebiz.heungaline.com on 2026-09-13 (not a live pull); every vessel on HAL's page counts as bookable via HAL",
+    "hal": "live from HAL's own SVMS API (schedule, voyage, document cut-off); vessels SVMS does not list keep the 13 Sep snapshot of ebiz.heungaline.com and are marked unverified; every vessel HAL can book counts as HAL",
     "ckline": "only vessels CK Line can book (own + chartered fleet); other carriers' vessels on es.ckline.co.kr are left out",
     "sjj": "JJ Shipping only publishes about the next 5 weeks",
 }
@@ -784,7 +821,7 @@ def merge_sailings(records: list[dict]) -> list[dict]:
         offers = c["offers"]
         carriers = sorted({o["carrier"] for o in offers})
         # dates / times come from the live sources when there are any, else from everything we have
-        basis = [o for o in offers if o["source"] not in STATIC_SOURCES] or offers
+        basis = [o for o in offers if not o.get("static")] or offers
         transit_vals = [o["transit_days"] for o in basis if o["transit_days"]]
         etas = [o["eta"] for o in basis if o["eta"]]
         etds = [o["etd"] for o in basis if o["etd"]]
@@ -932,9 +969,11 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             continue
         near = [c for k in (-1, 0, 1) for c in comp_by.get((port(x), etd + dt.timedelta(days=k)), [])]
         offers = sorted(x["offers"], key=lambda o: o["source"] != "HAL")
-        cut = next((c for c in (parse_cut(o.get("cy_cutoff")) for o in offers) if c), None)
-        if cut and cut < now:
+        cut = next((c for c in (parse_cut(o.get("cy_cutoff") or o.get("doc_cutoff")) for o in offers) if c), None)
+        if (cut and cut < now) or any(o.get("closed") for o in offers if o["source"] == "HAL"):
             continue                                # already closed
+        hal_offers = [o for o in offers if o["source"] == "HAL"]
+        unver = bool(hal_offers) and all(o.get("unverified") for o in hal_offers)
         left = (cut - now) if cut else None
         r_comp = len(near) >= 4
         r_close = left is not None and left <= dt.timedelta(days=3)
@@ -949,11 +988,13 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         if r_close:
             hrs = int(left.total_seconds() // 3600)
             when = f"{dfmt(cut)} {cut:%H:%M}"
-            why.append(f"cargo cut-off in {hrs} h ({when})" if hrs < 48 else f"cargo cut-off {when}")
+            why.append(f"cut-off in {hrs} h ({when})" if hrs < 48 else f"cut-off {when}")
         if r_space:
             why.append(f"closing soon but <b>{sp['balance']} TEU still free</b> &ndash; push sales now")
-        flagged.append({"x": x, "etd": etd, "port": port(x), "why": why, "full": full, "sp": sp,
-                        "urgent": (not full) and ((r_comp and r_close) or r_space),
+        if unver:
+            why.insert(0, "<b style='color:#b45309'>NOT IN SVMS &ndash; verify this sailing with HAL</b>")
+        flagged.append({"x": x, "etd": etd, "port": port(x), "why": why, "full": full, "sp": sp, "unver": unver,
+                        "urgent": (not full) and (not unver) and ((r_comp and r_close) or r_space),
                         "also": [c for c in x["carriers"] if c != "HAL"]})
 
     groups = []                                     # same vessel, both ports (ETDs within 3 days) -> one row
@@ -965,6 +1006,7 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             groups.append({"vessel": f["x"]["vessel"], "items": [f]})
     for g in groups:
         g["full"] = all(i["full"] for i in g["items"])
+        g["unver"] = all(i["unver"] for i in g["items"])
         g["urgent"] = any(i["urgent"] for i in g["items"])
         g["etd"] = min(i["etd"] for i in g["items"])
     groups.sort(key=lambda g: (wstart(g["etd"]), g["full"], not g["urgent"], g["etd"]))
@@ -999,7 +1041,7 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         for g in wg:
             bg = "#fef2f2" if g["urgent"] else "#ffffff"
             badge = (pill("URGENT", "#dc2626") if g["urgent"] else pill("FULL", "#64748b") if g["full"]
-                     else pill("SELL FIRST", "#d97706"))
+                     else pill("VERIFY", "#b45309") if g["unver"] else pill("SELL FIRST", "#d97706"))
             also = sorted({c for i in g["items"] for c in i["also"]})
             lines = "".join(
                 f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b>"
@@ -1114,8 +1156,9 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         "(its Refresh button does not work from an attachment).</span></p>"
         f"<p style='{FONT};color:#64748b;font-size:12px;border-top:1px solid #e2e8f0;padding-top:10px'>{data}<br>"
         "How sailings are picked: SELL FIRST = 4+ competitor sailings leave the same port within &plusmn;1 day, "
-        "or the cargo cut-off is within 3 days; URGENT = both (sailings already past cut-off are left out). "
-        "Competitor = a vessel HAL cannot book. HAL's own cut-off data was collected on 13 Sep and may be incomplete. "
+        "or the cut-off is within 3 days; URGENT = both (sailings already past cut-off are left out). "
+        "Competitor = a vessel HAL cannot book. HAL schedule, voyage and cut-off come live from SVMS (the cut-off is the document cut-off of existing bookings, so "
+        "a voyage without bookings shows none); VERIFY = vessel not found in SVMS. "
         + ("Space tags come from SVMS: space left = allocated TEU (BSA) minus TEU on board after loading at that port; "
            "FULL = nothing left, NEARLY FULL = 10% or less of the allocation left; URGENT also covers ships closing "
            "within 3 days that still have 25%+ of the allocation free."
