@@ -811,7 +811,7 @@ def merge_sailings(records: list[dict]) -> list[dict]:
 #  Daily mail (English): which HAL sailings to sell first + which days to watch #
 # --------------------------------------------------------------------------- #
 def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, result: str = "ok",
-               days: int = 14) -> tuple[str, str]:
+               weeks: int = 3) -> tuple[str, str]:
     """(subject, html) for the daily mail. Written for Outlook's (Word-based) renderer: plain tables, bgcolor cells."""
     def port(x):
         return "BKK" if "bangkok" in (x.get("origin") or "").lower() else "LCH"
@@ -829,7 +829,15 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
 
     dfmt = lambda d: f"{d:%a} {d.day} {d:%b}"                  # Thu 29 Oct
     today = now.date()
-    horizon = today + dt.timedelta(days=days)
+    wstart = lambda d: d - dt.timedelta(days=d.weekday())            # Monday of d's week
+    horizon = wstart(today) + dt.timedelta(days=6 + 7 * (weeks - 1))   # Sunday of the last week shown
+    week_starts = [wstart(today) + dt.timedelta(days=7 * k) for k in range(weeks)]
+
+    def week_title(ws):
+        we = ws + dt.timedelta(days=6)
+        rel = {0: " &middot; this week", 1: " &middot; next week"}.get((ws - wstart(today)).days // 7, "")
+        return f"Week {ws.isocalendar()[1]} &middot; {ws.day} {ws:%b} &ndash; {we.day} {we:%b}{rel}"
+
     comp_by = {}                                    # (port, date) -> competitor sailings from that port
     comp_day = {}                                   # date -> competitor sailings (both ports)
     own_day = {}                                    # date -> HAL sailings
@@ -891,7 +899,7 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
     for g in groups:
         g["urgent"] = any(i["urgent"] for i in g["items"])
         g["etd"] = min(i["etd"] for i in g["items"])
-    groups.sort(key=lambda g: (not g["urgent"], g["etd"]))
+    groups.sort(key=lambda g: (wstart(g["etd"]), not g["urgent"], g["etd"]))
     n_urgent = sum(1 for g in groups if g["urgent"])
 
     FONT = "font-family:Segoe UI,Arial,sans-serif"
@@ -901,26 +909,39 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
     pill = lambda text, col: (f"<table cellpadding='0' cellspacing='0' border='0'><tr>"
                               f"<td bgcolor='{col}' style='{FONT};padding:3px 9px;color:#ffffff;font-size:11px;"
                               f"font-weight:bold;white-space:nowrap'>{text}</td></tr></table>")
+    def week_row(ws, cols, note, tone="#0f172a"):
+        return (f"<tr><td colspan='{cols}' bgcolor='{tone}' style='{FONT};padding:7px 10px;color:#ffffff;"
+                f"font-size:13px;font-weight:bold'>{week_title(ws)}"
+                f"<span style='font-weight:normal;color:#cbd5e1'> &nbsp;&nbsp;{note}</span></td></tr>")
+
+    def clear_row(cols, text):
+        return (f"<tr><td colspan='{cols}' style='{FONT};padding:9px 10px;color:#15803d;font-size:13px;"
+                f"border-bottom:1px solid #e2e8f0'>{text}</td></tr>")
+
     sell_rows = ""
-    for g in groups:
-        bg = "#fef2f2" if g["urgent"] else "#ffffff"
-        badge = pill("URGENT", "#dc2626") if g["urgent"] else pill("SELL FIRST", "#d97706")
-        also = sorted({c for i in g["items"] for c in i["also"]})
-        lines = "".join(
-            f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b> &ndash; "
-            f"{'; '.join(i['why'])}</div>" for i in g["items"])
-        sell_rows += (
-            f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
-            f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
-            + (f"<div style='color:#64748b;font-size:12px'>shared with: {', '.join(also)}</div>" if also else
-               "<div style='color:#94a3b8;font-size:12px'>HAL only</div>")
-            + f"</td><td bgcolor='{bg}' style='{td}'>{lines}</td></tr>")
-    if groups:
-        sell = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
-                f"<tr><td style='{th}'>Level</td><td style='{th}'>HAL vessel</td><td style='{th}'>Why</td></tr>"
-                + sell_rows + "</table>")
-    else:
-        sell = f"<p style='{FONT};color:#15803d'>No HAL sailing needs special attention in the next {days} days.</p>"
+    for ws in week_starts:
+        wg = [g for g in groups if wstart(g["etd"]) == ws]
+        nu = sum(1 for g in wg if g["urgent"])
+        note = (f"{nu} urgent &middot; {len(wg) - nu} sell first" if wg else "all clear")
+        sell_rows += week_row(ws, 3, note, "#7f1d1d" if nu else "#0f172a")
+        if not wg:
+            sell_rows += clear_row(3, "No HAL sailing needs special attention this week.")
+        for g in wg:
+            bg = "#fef2f2" if g["urgent"] else "#ffffff"
+            badge = pill("URGENT", "#dc2626") if g["urgent"] else pill("SELL FIRST", "#d97706")
+            also = sorted({c for i in g["items"] for c in i["also"]})
+            lines = "".join(
+                f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b> &ndash; "
+                f"{'; '.join(i['why'])}</div>" for i in g["items"])
+            sell_rows += (
+                f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
+                f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
+                + (f"<div style='color:#64748b;font-size:12px'>shared with: {', '.join(also)}</div>" if also else
+                   "<div style='color:#94a3b8;font-size:12px'>HAL only</div>")
+                + f"</td><td bgcolor='{bg}' style='{td}'>{lines}</td></tr>")
+    sell = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
+            f"<tr><td style='{th}'>Level</td><td style='{th}'>HAL vessel</td><td style='{th}'>Why</td></tr>"
+            + sell_rows + "</table>")
 
     # ---- 2) days to watch -------------------------------------------------------------------------
     def level(n_comp, n_hal):
@@ -931,13 +952,16 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         return 0
 
     watch_rows, n_high = "", 0
-    for i in range(days):
+    day_list = []                                   # (date, level) for flagged days
+    for i in range((horizon - today).days + 1):
         d = today + dt.timedelta(days=i)
+        lv = level(len(comp_day.get(d, [])), len(own_day.get(d, [])))
+        if lv:
+            day_list.append((d, lv))
+    n_high = sum(1 for _, lv in day_list if lv == 2)
+    watch_by_week = {}
+    for d, lv in day_list:
         comp, mine = comp_day.get(d, []), own_day.get(d, [])
-        lv = level(len(comp), len(mine))
-        if not lv:
-            continue
-        n_high += lv == 2
         badge = pill("HIGH", "#dc2626") if lv == 2 else pill("WATCH", "#d97706")
         def comp_line(c):
             carriers = c["carriers"]
@@ -960,17 +984,21 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         comp_txt = "".join(comp_line(c) for c in sorted(comp, key=lambda c: (c["vessel"], port(c))))
         mine_txt = ("".join(mine_line(m) for m in mine) if mine
                     else "<b style='color:#dc2626'>No HAL sailing</b>")
-        watch_rows += (
+        row_html = (
             f"<tr><td style='{td};white-space:nowrap'><b>{dfmt(d)}</b></td><td style='{td}'>{badge}</td>"
             f"<td style='{td}'>{comp_txt}<div style='color:#64748b;font-size:12px'>"
             f"{len(comp)} competitor sailings</div></td><td style='{td}'>{mine_txt}</td></tr>")
-    if watch_rows:
-        watch = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
-                 f"<tr><td style='{th}'>Date (ETD)</td><td style='{th}'>Level</td>"
-                 f"<td style='{th}'>Competitor vessels</td><td style='{th}'>HAL that day</td></tr>"
-                 + watch_rows + "</table>")
-    else:
-        watch = f"<p style='{FONT};color:#15803d'>No special watch days in the next {days} days.</p>"
+        watch_by_week.setdefault(wstart(d), []).append(row_html)
+    for ws in week_starts:
+        wl = [lv for d, lv in day_list if wstart(d) == ws]
+        note = (f"{sum(1 for v in wl if v == 2)} high &middot; {sum(1 for v in wl if v == 1)} watch" if wl
+                else "all clear")
+        watch_rows += week_row(ws, 4, note, "#7f1d1d" if 2 in wl else "#0f172a")
+        watch_rows += "".join(watch_by_week.get(ws, [])) or clear_row(4, "No special watch days this week.")
+    watch = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
+             f"<tr><td style='{th}'>Date (ETD)</td><td style='{th}'>Level</td>"
+             f"<td style='{th}'>Competitor vessels</td><td style='{th}'>HAL that day</td></tr>"
+             + watch_rows + "</table>")
 
     # ---- 3) data quality (one line) -----------------------------------------------------------------
     bad = [s["Source"] for s in statuses if s["Status"] != "ok"]
@@ -1005,8 +1033,8 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         + box(len(groups), "HAL vessels needing attention", "#d97706" if groups else "#15803d")
         + box(n_high, "days with heavy competition (high)", "#dc2626" if n_high else "#15803d")
         + "</tr></table>"
-        f"<h3 style='{FONT};margin:24px 0 6px'>1. HAL sailings to sell first (next {days} days)</h3>" + sell +
-        f"<h3 style='{FONT};margin:24px 0 6px'>2. Days to watch &ndash; competitor sailings (next {days} days)</h3>"
+        f"<h3 style='{FONT};margin:24px 0 6px'>1. HAL sailings to sell first &ndash; week by week</h3>" + sell +
+        f"<h3 style='{FONT};margin:24px 0 6px'>2. Days to watch &ndash; competitor sailings, week by week</h3>"
         + watch +
         f"<p style='{FONT};margin-top:24px'>Full dashboard: "
         "<a href='https://palm0105.github.io/all-schedule-hcm/dashboard.html'>palm0105.github.io/all-schedule-hcm</a>"
