@@ -734,6 +734,65 @@ def merge_sailings(records: list[dict]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+#  Competitor watch (used in the daily mail)                                  #
+# --------------------------------------------------------------------------- #
+def build_watch_html(merged: list[dict], today: dt.date, days: int = 14) -> str:
+    """HTML block for the daily mail: which days in the next `days` days to watch because competitors
+    (carriers whose vessels HAL can NOT book) sail, and what HAL itself has on those days."""
+    def abbr(s):
+        return "BKK" if "bangkok" in (s.get("origin") or "").lower() else "LCH"
+
+    by_day: dict[str, dict] = {}
+    for s in merged:
+        d = s.get("etd_date")
+        if not d:
+            continue
+        slot = by_day.setdefault(d, {"ours": [], "comp": []})
+        # HAL's own ships (HEUNG-A ...) count as ours even when HAL's static list does not cover that date
+        own = "HAL" in s["carriers"] or (s.get("vessel") or "").upper().startswith("HEUNG")
+        slot["ours" if own else "comp"].append(s)
+
+    def level(n_comp, n_hal):
+        if (n_comp >= 3 and n_hal == 0) or n_comp >= 4:
+            return "HIGH"
+        if (n_comp >= 2 and n_hal == 0) or n_comp >= 3:
+            return "WATCH"
+        return ""
+
+    rows = []
+    n_comp_total = 0
+    for i in range(days):
+        day = today + dt.timedelta(days=i)
+        slot = by_day.get(day.isoformat(), {"ours": [], "comp": []})
+        n_comp_total += len(slot["comp"])
+        lv = level(len(slot["comp"]), len(slot["ours"]))
+        if not lv:
+            continue
+        color = "#b91c1c" if lv == "HIGH" else "#c2410c"
+        comp = "<br>".join(
+            f"{c['vessel']} <span style='color:#64748b'>({abbr(c)} &middot; {', '.join(c['carriers'])})</span>"
+            for c in slot["comp"])
+        ours = "<br>".join(f"{o['vessel']} ({abbr(o)})" for o in slot["ours"]) or "<i style='color:#b91c1c'>no HAL sailing</i>"
+        rows.append(
+            f"<tr style='vertical-align:top'>"
+            f"<td style='padding:5px 10px 5px 0;white-space:nowrap'><b>{day.strftime('%a %d %b')}</b></td>"
+            f"<td style='padding:5px 10px 5px 0;color:{color}'><b>{lv}</b></td>"
+            f"<td style='padding:5px 10px 5px 0'>{comp}</td>"
+            f"<td style='padding:5px 0'>{ours}</td></tr>")
+
+    head = (f"<h3 style='margin:18px 0 4px'>Competitor watch &ndash; next {days} days (by ETD)</h3>"
+            f"<p style='color:#64748b;margin:0 0 6px'>Competitor sailings = vessels HAL cannot book "
+            f"({n_comp_total} in this period). HIGH = 4+ competitor sailings, or 3+ with no HAL sailing that day; "
+            f"WATCH = 3 competitor sailings, or 2 with no HAL sailing.</p>")
+    if not rows:
+        return head + "<p>No special watch days in this period.</p>"
+    return (head + "<table style='border-collapse:collapse'>"
+            "<tr style='text-align:left;color:#64748b'><th style='padding:2px 10px 2px 0'>Date</th>"
+            "<th style='padding:2px 10px 2px 0'>Level</th><th style='padding:2px 10px 2px 0'>Competitor vessels</th>"
+            "<th>HAL that day</th></tr>" + "".join(rows) + "</table>")
+
+
+# --------------------------------------------------------------------------- #
 #  Export: Excel                                                              #
 # --------------------------------------------------------------------------- #
 def transit_text(t) -> str:
@@ -2137,6 +2196,7 @@ def main():
     CACHE_FILE.write_text(json.dumps(
         {"start": start.isoformat(), "end": end.isoformat(),
          "records": records, "statuses": statuses, "merged": len(merged),
+         "watch_html": build_watch_html(merged, dt.date.today()),
          "generated": dt.datetime.now().isoformat()},
         ensure_ascii=False, indent=1), encoding="utf-8")
 
