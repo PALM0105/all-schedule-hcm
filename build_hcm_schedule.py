@@ -1007,76 +1007,17 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
                         "urgent": (not full) and (not unver) and ((r_comp and r_close) or r_space),
                         "also": [c for c in x["carriers"] if c != "HAL"]})
 
-    groups = []                                     # same vessel, both ports (ETDs within 3 days) -> one row
-    for f in sorted(flagged, key=lambda f: (f["x"]["vessel"], f["etd"])):
-        g = groups[-1] if groups else None
-        if g and g["vessel"] == f["x"]["vessel"] and (f["etd"] - g["items"][-1]["etd"]).days <= 3:
-            g["items"].append(f)
-        else:
-            groups.append({"vessel": f["x"]["vessel"], "items": [f]})
-    for g in groups:
-        g["full"] = all(i["full"] for i in g["items"])
-        g["unver"] = all(i["unver"] for i in g["items"])
-        g["urgent"] = any(i["urgent"] for i in g["items"])
-        g["etd"] = min(i["etd"] for i in g["items"])
-    groups.sort(key=lambda g: (wstart(g["etd"]), g["full"], not g["urgent"], g["etd"]))
-    n_urgent = sum(1 for g in groups if g["urgent"])
+    n_urgent = sum(1 for f in flagged if f["urgent"])
+    n_sell = sum(1 for f in flagged if not f["urgent"] and not f["full"] and not f["unver"])
 
     FONT = "font-family:Segoe UI,Arial,sans-serif"
     th = f"{FONT};padding:6px 10px;text-align:left;font-size:12px;color:#64748b;border-bottom:2px solid #cbd5e1"
-    td = f"{FONT};padding:8px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top;font-size:14px"
+    td = f"{FONT};padding:9px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top;font-size:14px"
     # badge = a one-cell table with a background colour (Outlook ignores rounded spans / padding on <span>)
     pill = lambda text, col: (f"<table cellpadding='0' cellspacing='0' border='0'><tr>"
                               f"<td bgcolor='{col}' style='{FONT};padding:3px 9px;color:#ffffff;font-size:11px;"
                               f"font-weight:bold;white-space:nowrap'>{text}</td></tr></table>")
-    def week_row(ws, cols, note, tone="#0f172a"):
-        return (f"<tr><td colspan='{cols}' bgcolor='{tone}' style='{FONT};padding:7px 10px;color:#ffffff;"
-                f"font-size:13px;font-weight:bold'>{week_title(ws)}"
-                f"<span style='font-weight:normal;color:#cbd5e1'> &nbsp;&nbsp;{note}</span></td></tr>")
 
-    def clear_row(cols, text):
-        return (f"<tr><td colspan='{cols}' style='{FONT};padding:9px 10px;color:#15803d;font-size:13px;"
-                f"border-bottom:1px solid #e2e8f0'>{text}</td></tr>")
-
-    sell_rows = ""
-    for ws in week_starts:
-        wg = [g for g in groups if wstart(g["etd"]) == ws]
-        nu = sum(1 for g in wg if g["urgent"])
-        nf = sum(1 for g in wg if g["full"])
-        note = (f"{nu} urgent &middot; {len(wg) - nu - nf} sell first" + (f" &middot; {nf} full" if nf else "")
-                if wg else "all clear")
-        sell_rows += week_row(ws, 3, note, "#7f1d1d" if nu else "#0f172a")
-        if not wg:
-            sell_rows += clear_row(3, "No HAL sailing needs special attention this week.")
-        for g in wg:
-            bg = "#fef2f2" if g["urgent"] else "#ffffff"
-            badge = (pill("URGENT", "#dc2626") if g["urgent"] else pill("FULL", "#64748b") if g["full"]
-                     else pill("VERIFY", "#b45309") if g["unver"] else pill("SELL FIRST", "#d97706"))
-            also = sorted({c for i in g["items"] for c in i["also"]})
-            lines = "".join(
-                f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b>"
-                f"{space_tag(i['sp'])} &ndash; {'; '.join(i['why'])}</div>"
-                for i in g["items"])
-            vs = []
-            for i in g["items"]:
-                pair = (voy_of(i["x"], True), svc_of(i["x"]))
-                if pair not in vs:
-                    vs.append(pair)
-            vs_txt = " / ".join(
-                " &middot; ".join(t for t in (f"Voyage {v}" if v else "", f"Service {sv}" if sv else "") if t)
-                for v, sv in vs)
-            sell_rows += (
-                f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
-                f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
-                f"<div style='color:#334155;font-size:12px'>{vs_txt}</div>"
-                + (f"<div style='color:#64748b;font-size:12px'>shared with: {', '.join(also)}</div>" if also else
-                   "<div style='color:#94a3b8;font-size:12px'>HAL only</div>")
-                + f"</td><td bgcolor='{bg}' style='{td}'>{lines}</td></tr>")
-    sell = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
-            f"<tr><td style='{th}'>Level</td><td style='{th}'>HAL vessel</td><td style='{th}'>Why</td></tr>"
-            + sell_rows + "</table>")
-
-    # ---- 2) days to watch -------------------------------------------------------------------------
     def level(n_comp, n_hal):
         if (n_comp >= 3 and n_hal == 0) or n_comp >= 4:
             return 2
@@ -1084,54 +1025,96 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             return 1
         return 0
 
-    watch_rows, n_high = "", 0
-    day_list = []                                   # (date, level) for flagged days
+    # ---- one table, week by week, day by day: HAL's sailings next to the competitors of the same day ------
+    day_info = {}
     for i in range((horizon - today).days + 1):
         d = today + dt.timedelta(days=i)
-        lv = level(len(comp_day.get(d, [])), len(own_day.get(d, [])))
-        if lv:
-            day_list.append((d, lv))
-    n_high = sum(1 for _, lv in day_list if lv == 2)
-    watch_by_week = {}
-    for d, lv in day_list:
         comp, mine = comp_day.get(d, []), own_day.get(d, [])
-        badge = pill("HIGH", "#dc2626") if lv == 2 else pill("WATCH", "#d97706")
-        def comp_line(c):
-            carriers = c["carriers"]
-            tag = (f"shared by {', '.join(carriers)}" if len(carriers) > 1 else f"{carriers[0]} only")
+        fl = {id(f["x"]): f for f in flagged if f["etd"] == d}
+        lv = level(len(comp), len(mine))
+        if lv or fl:
+            day_info[d] = {"lv": lv, "comp": comp, "mine": mine, "fl": fl}
+    n_high = sum(1 for v in day_info.values() if v["lv"] == 2)
+
+    def label_of(f):
+        if f["urgent"]:
+            return "URGENT", "#dc2626"
+        if f["full"]:
+            return "FULL", "#64748b"
+        if f["unver"]:
+            return "VERIFY", "#b45309"
+        return "SELL FIRST", "#d97706"
+
+    def hal_cell(m, f):
+        """one HAL sailing: [label] VESSEL (port) / Voyage - Service - shared / space / why"""
+        lab = ""
+        if f and not f["full"]:                       # a FULL ship already carries the red FULL space tag
+            t, col = label_of(f)
+            lab = f"<b style='color:{col};font-size:12px'>{t}</b> "
+        others = share_note(m)
+        v, sv = voy_of(m, True), svc_of(m)
+        info = " &middot; ".join(t for t in (f"Voyage {v}" if v else "", f"Service {sv}" if sv else "",
+                                              f"shared with {', '.join(others)}" if others else "HAL only") if t)
+        sp = space_tag(space_for(m))
+        why = ""
+        if f and f["why"] and not f["full"]:          # nothing to sell on a full ship, so no reasons
+            why = f"<div style='font-size:13px;color:#0f172a'>{'; '.join(f['why'])}</div>"
+        return (f"<div style='margin-bottom:8px'>{lab}<b style='font-size:15px'>{m['vessel']}</b> ({port(m)})"
+                f"<div style='color:#475569;font-size:12px'>{info}</div>"
+                + (f"<div>{sp.strip()}</div>" if sp else "") + why + "</div>")
+
+    def comp_cell(comp):
+        if not comp:
+            return "<span style='color:#94a3b8'>&ndash;</span>"
+        out = []
+        for c in sorted(comp, key=lambda c: (c["vessel"], port(c))):
+            cs = c["carriers"]
+            tag = f"shared by {', '.join(cs)}" if len(cs) > 1 else cs[0]
             hal_too = [m for m in own_by_vessel.get((c.get("vessel") or "").upper(), [])
                        if dt.date.fromisoformat(m["etd_date"]) >= today]
-            hal_note = (f"<br><b style='color:#15803d;font-size:12px'>HAL also has this ship: "
-                        + ", ".join(f"{port(m)} {dt.date.fromisoformat(m['etd_date']).day} "
-                                    f"{dt.date.fromisoformat(m['etd_date']):%b}" for m in hal_too[:3])
-                        + "</b>") if hal_too else ""
-            return (f"<div style='margin-bottom:4px'><b>{c['vessel']}</b> ({port(c)}) "
-                    f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{hal_note}</div>")
+            note = (" <b style='color:#15803d;font-size:12px'>HAL also has this ship: "
+                    + ", ".join(f"{port(m)} {dt.date.fromisoformat(m['etd_date']).day} "
+                                f"{dt.date.fromisoformat(m['etd_date']):%b}" for m in hal_too[:3]) + "</b>"
+                    ) if hal_too else ""
+            out.append(f"<div style='margin-bottom:3px;font-size:13px'><b>{c['vessel']}</b> ({port(c)}) "
+                       f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{note}</div>")
+        return "".join(out) + (f"<div style='color:#64748b;font-size:12px'>{len(comp)} competitor sailings</div>")
 
-        def mine_line(m):
-            others = share_note(m)
-            tag = f"shared with {', '.join(others)}" if others else "HAL only"
-            return (f"<div style='margin-bottom:4px'><b>{m['vessel']}</b> ({port(m)}){voy_html(m, True)} "
-                    f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{space_tag(space_for(m))}</div>")
-
-        comp_txt = "".join(comp_line(c) for c in sorted(comp, key=lambda c: (c["vessel"], port(c))))
-        mine_txt = ("".join(mine_line(m) for m in mine) if mine
-                    else "<b style='color:#dc2626'>No HAL sailing</b>")
-        row_html = (
-            f"<tr><td style='{td};white-space:nowrap'><b>{dfmt(d)}</b></td><td style='{td}'>{badge}</td>"
-            f"<td style='{td}'>{comp_txt}<div style='color:#64748b;font-size:12px'>"
-            f"{len(comp)} competitor sailings</div></td><td style='{td}'>{mine_txt}</td></tr>")
-        watch_by_week.setdefault(wstart(d), []).append(row_html)
+    rows_html = ""
     for ws in week_starts:
-        wl = [lv for d, lv in day_list if wstart(d) == ws]
-        note = (f"{sum(1 for v in wl if v == 2)} high &middot; {sum(1 for v in wl if v == 1)} watch" if wl
-                else "all clear")
-        watch_rows += week_row(ws, 4, note, "#7f1d1d" if 2 in wl else "#0f172a")
-        watch_rows += "".join(watch_by_week.get(ws, [])) or clear_row(4, "No special watch days this week.")
-    watch = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
-             f"<tr><td style='{th}'>Date (ETD)</td><td style='{th}'>Level</td>"
-             f"<td style='{th}'>Competitor vessels</td><td style='{th}'>HAL that day</td></tr>"
-             + watch_rows + "</table>")
+        days_w = [d for d in sorted(day_info) if wstart(d) == ws]
+        fl_w = [f for d in days_w for f in day_info[d]["fl"].values()]
+        nu = sum(1 for f in fl_w if f["urgent"])
+        ns = sum(1 for f in fl_w if not f["urgent"] and not f["full"] and not f["unver"])
+        nf = sum(1 for f in fl_w if f["full"])
+        nh = sum(1 for d in days_w if day_info[d]["lv"] == 2)
+        nw = sum(1 for d in days_w if day_info[d]["lv"] == 1)
+        bits = [f"{nu} urgent", f"{ns} sell first"] + ([f"{nf} full"] if nf else []) + \
+               [f"{nh} high-competition day{'s' if nh != 1 else ''}", f"{nw} watch"]
+        note = " &middot; ".join(bits) if days_w else "all clear"
+        tone = "#7f1d1d" if (nu or nh) else "#0f172a"
+        rows_html += (f"<tr><td colspan='3' bgcolor='{tone}' style='{FONT};padding:7px 10px;color:#ffffff;"
+                      f"font-size:13px;font-weight:bold'>{week_title(ws)}"
+                      f"<span style='font-weight:normal;color:#cbd5e1'> &nbsp;&nbsp;{note}</span></td></tr>")
+        if not days_w:
+            rows_html += (f"<tr><td colspan='3' style='{FONT};padding:9px 10px;color:#15803d;font-size:13px;"
+                          f"border-bottom:1px solid #e2e8f0'>Nothing to flag this week.</td></tr>")
+        for d in days_w:
+            info = day_info[d]
+            urgent_day = any(f["urgent"] for f in info["fl"].values())
+            bg = "#fef2f2" if urgent_day else "#ffffff"
+            lv_pill = (pill("HIGH", "#dc2626") if info["lv"] == 2 else pill("WATCH", "#d97706")
+                       if info["lv"] == 1 else "")
+            hal = ("".join(hal_cell(m, info["fl"].get(id(m))) for m in sorted(info["mine"], key=lambda m: port(m)))
+                   or "<b style='color:#dc2626'>No HAL sailing</b>")
+            rows_html += (
+                f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};width:86px'><b>{dfmt(d)}</b>"
+                f"<div style='margin-top:5px'>{lv_pill}</div></td>"
+                f"<td bgcolor='{bg}' style='{td};width:300px'>{hal}</td>"
+                f"<td bgcolor='{bg}' style='{td}'>{comp_cell(info['comp'])}</td></tr>")
+    plan = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
+            f"<tr><td style='{th}'>Date (ETD)</td><td style='{th}'>HAL sailings</td>"
+            f"<td style='{th}'>Competitor sailings that day</td></tr>" + rows_html + "</table>")
 
     # ---- 3) data quality (one line) -----------------------------------------------------------------
     bad = [s["Source"] for s in statuses if s["Status"] != "ok"]
@@ -1163,12 +1146,11 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         f"{now:%H:%M} &middot; {len(merged)} sailings (duplicates merged)</div>{banner}"
         "<table cellpadding='0' cellspacing='0'><tr>"
         + box(n_urgent, "HAL sailings to sell NOW (urgent)", "#dc2626" if n_urgent else "#15803d")
-        + box(len(groups), "HAL vessels needing attention", "#d97706" if groups else "#15803d")
+        + box(n_sell, "HAL sailings to sell first", "#d97706" if n_sell else "#15803d")
         + box(n_high, "days with heavy competition (high)", "#dc2626" if n_high else "#15803d")
         + "</tr></table>"
-        f"<h3 style='{FONT};margin:24px 0 6px'>1. HAL sailings to sell first &ndash; week by week</h3>" + sell +
-        f"<h3 style='{FONT};margin:24px 0 6px'>2. Days to watch &ndash; competitor sailings, week by week</h3>"
-        + watch +
+        f"<h3 style='{FONT};margin:24px 0 6px'>Week by week &ndash; HAL sailings and competitors on the same days</h3>"
+        + plan +
         f"<p style='{FONT};margin-top:24px'>Full dashboard: "
         "<a href='https://palm0105.github.io/all-schedule-hcm/dashboard.html'>palm0105.github.io/all-schedule-hcm</a>"
         "<br><span style='color:#64748b'>or open the HTML file attached to this mail "
