@@ -2136,7 +2136,7 @@ def main():
     docs_page.write_text(with_hub_link(htmlf.read_text(encoding="utf-8")), encoding="utf-8")
     CACHE_FILE.write_text(json.dumps(
         {"start": start.isoformat(), "end": end.isoformat(),
-         "records": records, "statuses": statuses,
+         "records": records, "statuses": statuses, "merged": len(merged),
          "generated": dt.datetime.now().isoformat()},
         ensure_ascii=False, indent=1), encoding="utf-8")
 
