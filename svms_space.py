@@ -12,7 +12,8 @@ Writes two files in output/:
         bsa      space allocated on the vessel (TEU)
         load     TEU loaded / booked for loading at this port
         rob      TEU on board after this port
-        balance  bsa - rob  (TEU still free after loading at this port; <= 0 means full)
+        balance  TEU still free for cargo loaded at this port = the smallest (bsa - rob) from this port to the
+                 last Thai port of the voyage; <= 0 means full.  port_balance = bsa - rob at this port alone
 
 build_hcm_schedule.py reads svms_schedule.json as HAL's schedule (instead of the 13 Sep snapshot) and the mail uses
 space.json for the FULL / NEARLY FULL / SPACE LEFT tags.
@@ -104,6 +105,17 @@ def run(end: dt.date | None = None, log=print) -> dict:
             space.append({"vessel": name, "voyage": vyg, "port": "LCH" if pol == "THLCH" else "BKK",
                           "etd": x.get("ETD"), "bsa": x.get("BSA"), "load": x.get("LOAD"),
                           "rob": x.get("ROB"), "balance": x.get("BALANCE")})
+
+    # Space for cargo loaded at a port is limited by the tightest point of the rest of the trip: cargo booked at
+    # Bangkok rides on to Laem Chabang, so Bangkok's own balance is only usable if Laem Chabang still has room too.
+    by_voy = {}
+    for r in space:
+        by_voy.setdefault((r["vessel"], r["voyage"]), []).append(r)
+    for rows_ in by_voy.values():
+        rows_.sort(key=lambda r: r["etd"] or "")
+        for i, r in enumerate(rows_):
+            r["port_balance"] = r["balance"]
+            r["balance"] = min(x["port_balance"] if "port_balance" in x else x["balance"] for x in rows_[i:])
 
     OUT_DIR.mkdir(exist_ok=True)
     stamp = dt.datetime.now().isoformat(timespec="seconds")
