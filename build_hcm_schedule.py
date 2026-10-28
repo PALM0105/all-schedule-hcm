@@ -843,6 +843,16 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             comp_by.setdefault((port(x), d), []).append(x)
             comp_day.setdefault(d, []).append(x)
 
+    own_by_vessel = {}                              # vessel name -> HAL sailings (any date in range)
+    for x in merged:
+        if own(x) and x.get("etd_date"):
+            own_by_vessel.setdefault((x.get("vessel") or "").upper(), []).append(x)
+
+    def share_note(x):
+        """carriers that sell this sailing besides HAL ("shared with ...") as small grey text"""
+        others = [c for c in x["carriers"] if c != "HAL"]
+        return others
+
     # ---- 1) HAL sailings to sell first ------------------------------------------------------------
     flagged = []                                    # one entry per HAL sailing that needs attention
     for x in merged:
@@ -902,7 +912,8 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         sell_rows += (
             f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
             f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
-            + (f"<div style='color:#64748b;font-size:12px'>also sold by: {', '.join(also)}</div>" if also else "")
+            + (f"<div style='color:#64748b;font-size:12px'>shared with: {', '.join(also)}</div>" if also else
+               "<div style='color:#94a3b8;font-size:12px'>HAL only</div>")
             + f"</td><td bgcolor='{bg}' style='{td}'>{lines}</td></tr>")
     if groups:
         sell = ("<table cellpadding='0' cellspacing='0' style='border-collapse:collapse;width:100%'>"
@@ -928,9 +939,26 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             continue
         n_high += lv == 2
         badge = pill("HIGH", "#dc2626") if lv == 2 else pill("WATCH", "#d97706")
-        comp_txt = ", ".join(f"{c['vessel']} <span style='color:#94a3b8'>({port(c)})</span>"
-                             for c in sorted(comp, key=lambda c: c["vessel"]))
-        mine_txt = (", ".join(f"{m['vessel']} ({port(m)})" for m in mine) if mine
+        def comp_line(c):
+            carriers = c["carriers"]
+            tag = (f"shared by {', '.join(carriers)}" if len(carriers) > 1 else f"{carriers[0]} only")
+            hal_too = [m for m in own_by_vessel.get((c.get("vessel") or "").upper(), [])
+                       if dt.date.fromisoformat(m["etd_date"]) >= today]
+            hal_note = (f"<br><b style='color:#15803d;font-size:12px'>HAL also has this ship: "
+                        + ", ".join(f"{port(m)} {dt.date.fromisoformat(m['etd_date']).day} "
+                                    f"{dt.date.fromisoformat(m['etd_date']):%b}" for m in hal_too[:3])
+                        + "</b>") if hal_too else ""
+            return (f"<div style='margin-bottom:4px'><b>{c['vessel']}</b> ({port(c)}) "
+                    f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{hal_note}</div>")
+
+        def mine_line(m):
+            others = share_note(m)
+            tag = f"shared with {', '.join(others)}" if others else "HAL only"
+            return (f"<div style='margin-bottom:4px'><b>{m['vessel']}</b> ({port(m)}) "
+                    f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span></div>")
+
+        comp_txt = "".join(comp_line(c) for c in sorted(comp, key=lambda c: (c["vessel"], port(c))))
+        mine_txt = ("".join(mine_line(m) for m in mine) if mine
                     else "<b style='color:#dc2626'>No HAL sailing</b>")
         watch_rows += (
             f"<tr><td style='{td};white-space:nowrap'><b>{dfmt(d)}</b></td><td style='{td}'>{badge}</td>"
