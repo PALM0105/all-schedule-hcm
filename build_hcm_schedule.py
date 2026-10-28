@@ -808,71 +808,23 @@ def merge_sailings(records: list[dict]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
-#  Competitor watch (used in the daily mail)                                  #
+#  Daily mail (Thai): which HAL sailings to sell first + which days to watch   #
 # --------------------------------------------------------------------------- #
-def build_watch_html(merged: list[dict], today: dt.date, days: int = 14) -> str:
-    """HTML block for the daily mail: which days in the next `days` days to watch because competitors
-    (carriers whose vessels HAL can NOT book) sail, and what HAL itself has on those days."""
-    def abbr(s):
-        return "BKK" if "bangkok" in (s.get("origin") or "").lower() else "LCH"
-
-    by_day: dict[str, dict] = {}
-    for s in merged:
-        d = s.get("etd_date")
-        if not d:
-            continue
-        slot = by_day.setdefault(d, {"ours": [], "comp": []})
-        # HAL's own ships (HEUNG-A ...) count as ours even when HAL's static list does not cover that date
-        own = "HAL" in s["carriers"] or (s.get("vessel") or "").upper().startswith("HEUNG")
-        slot["ours" if own else "comp"].append(s)
-
-    def level(n_comp, n_hal):
-        if (n_comp >= 3 and n_hal == 0) or n_comp >= 4:
-            return "HIGH"
-        if (n_comp >= 2 and n_hal == 0) or n_comp >= 3:
-            return "WATCH"
-        return ""
-
-    rows = []
-    n_comp_total = 0
-    for i in range(days):
-        day = today + dt.timedelta(days=i)
-        slot = by_day.get(day.isoformat(), {"ours": [], "comp": []})
-        n_comp_total += len(slot["comp"])
-        lv = level(len(slot["comp"]), len(slot["ours"]))
-        if not lv:
-            continue
-        color = "#b91c1c" if lv == "HIGH" else "#c2410c"
-        comp = "<br>".join(
-            f"{c['vessel']} <span style='color:#64748b'>({abbr(c)} &middot; {', '.join(c['carriers'])})</span>"
-            for c in slot["comp"])
-        ours = "<br>".join(f"{o['vessel']} ({abbr(o)})" for o in slot["ours"]) or "<i style='color:#b91c1c'>no HAL sailing</i>"
-        rows.append(
-            f"<tr style='vertical-align:top'>"
-            f"<td style='padding:5px 10px 5px 0;white-space:nowrap'><b>{day.strftime('%a %d %b')}</b></td>"
-            f"<td style='padding:5px 10px 5px 0;color:{color}'><b>{lv}</b></td>"
-            f"<td style='padding:5px 10px 5px 0'>{comp}</td>"
-            f"<td style='padding:5px 0'>{ours}</td></tr>")
-
-    head = (f"<h3 style='margin:18px 0 4px'>Competitor watch &ndash; next {days} days (by ETD)</h3>"
-            f"<p style='color:#64748b;margin:0 0 6px'>Competitor sailings = vessels HAL cannot book "
-            f"({n_comp_total} in this period). HIGH = 4+ competitor sailings, or 3+ with no HAL sailing that day; "
-            f"WATCH = 3 competitor sailings, or 2 with no HAL sailing.</p>")
-    if not rows:
-        return head + "<p>No special watch days in this period.</p>"
-    return (head + "<table style='border-collapse:collapse'>"
-            "<tr style='text-align:left;color:#64748b'><th style='padding:2px 10px 2px 0'>Date</th>"
-            "<th style='padding:2px 10px 2px 0'>Level</th><th style='padding:2px 10px 2px 0'>Competitor vessels</th>"
-            "<th>HAL that day</th></tr>" + "".join(rows) + "</table>")
+_TH_DAY = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
+_TH_MON = ["", "ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
 
 
-def build_sell_html(merged: list[dict], now: dt.datetime, days: int = 14) -> str:
-    """HTML block for the daily mail: HAL's own sailings in the next `days` days that should be sold first,
-    because competitors sail within +-1 day of them and/or the cargo cut-off is close."""
-    def abbr(x):
+def _th_date(d) -> str:
+    return f"{_TH_DAY[d.weekday()]} {d.day} {_TH_MON[d.month]}"
+
+
+def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, result: str = "ok",
+               days: int = 14) -> tuple[str, str]:
+    """(subject, html) for the daily mail. Thai text, English vessel names. Pure function of the merged sailings."""
+    def port(x):
         return "BKK" if "bangkok" in (x.get("origin") or "").lower() else "LCH"
 
-    def is_own(x):
+    def own(x):
         return "HAL" in x["carriers"] or (x.get("vessel") or "").upper().startswith("HEUNG")
 
     def parse_cut(t):
@@ -883,59 +835,171 @@ def build_sell_html(merged: list[dict], now: dt.datetime, days: int = 14) -> str
                 pass
         return None
 
-    comp_by_day: dict[tuple, list[dict]] = {}          # (origin, date) -> competitor sailings from that port
-    for x in merged:
-        if x.get("etd_date") and not is_own(x):
-            comp_by_day.setdefault((abbr(x), dt.date.fromisoformat(x["etd_date"])), []).append(x)
-
     today = now.date()
-    rows = []
+    horizon = today + dt.timedelta(days=days)
+    comp_by = {}                                    # (port, date) -> competitor sailings from that port
+    comp_day = {}                                   # date -> competitor sailings (both ports)
+    own_day = {}                                    # date -> HAL sailings
     for x in merged:
-        if not x.get("etd_date") or not is_own(x):
+        if not x.get("etd_date"):
+            continue
+        d = dt.date.fromisoformat(x["etd_date"])
+        if own(x):
+            own_day.setdefault(d, []).append(x)
+        else:
+            comp_by.setdefault((port(x), d), []).append(x)
+            comp_day.setdefault(d, []).append(x)
+
+    # ---- 1) HAL sailings to sell first ------------------------------------------------------------
+    flagged = []                                    # one entry per HAL sailing that needs attention
+    for x in merged:
+        if not x.get("etd_date") or not own(x):
             continue
         etd = dt.date.fromisoformat(x["etd_date"])
-        if not (today <= etd <= today + dt.timedelta(days=days)):
+        if not (today <= etd <= horizon):
             continue
-        near = [c for d in (-1, 0, 1) for c in comp_by_day.get((abbr(x), etd + dt.timedelta(days=d)), [])]
-        # earliest known cargo cut-off still in the future (HAL's own figure first, else any carrier's)
+        near = [c for k in (-1, 0, 1) for c in comp_by.get((port(x), etd + dt.timedelta(days=k)), [])]
         offers = sorted(x["offers"], key=lambda o: o["source"] != "HAL")
-        cuts = [parse_cut(o.get("cy_cutoff")) for o in offers]
-        cut = next((c for c in cuts if c), None)
+        cut = next((c for c in (parse_cut(o.get("cy_cutoff")) for o in offers) if c), None)
         if cut and cut < now:
-            continue                                   # already closed: nothing left to sell
+            continue                                # already closed
         left = (cut - now) if cut else None
         r_comp = len(near) >= 4
         r_close = left is not None and left <= dt.timedelta(days=3)
         if not (r_comp or r_close):
             continue
-        reasons = []
+        why = []
         if r_comp:
-            reasons.append(f"{len(near)} competitor sailings from {abbr(x)} within &plusmn;1 day")
+            why.append(f"คู่แข่งออกจาก {port(x)} {len(near)} เที่ยว ภายใน ±1 วัน")
         if r_close:
             hrs = int(left.total_seconds() // 3600)
-            reasons.append(f"cargo cut-off in {hrs} h ({cut.strftime('%a %d %b %H:%M')})" if hrs < 48
-                           else f"cargo cut-off {cut.strftime('%a %d %b %H:%M')}")
-        level = "URGENT" if (r_comp and r_close) else "SELL"
-        color = "#b91c1c" if level == "URGENT" else "#c2410c"
-        also = [c for c in x["carriers"] if c != "HAL"]
-        rows.append((etd, level, (
-            f"<tr style='vertical-align:top'>"
-            f"<td style='padding:5px 10px 5px 0;white-space:nowrap'><b>{etd.strftime('%a %d %b')}</b></td>"
-            f"<td style='padding:5px 10px 5px 0;color:{color}'><b>{level}</b></td>"
-            f"<td style='padding:5px 10px 5px 0'><b>{x['vessel']}</b> ({abbr(x)})"
-            + (f"<br><span style='color:#64748b'>also sold by {', '.join(also)}</span>" if also else "") +
-            f"</td><td style='padding:5px 0'>{'<br>'.join(reasons)}</td></tr>")))
-    head = (f"<h3 style='margin:18px 0 4px'>Sell first &ndash; HAL sailings at risk (next {days} days)</h3>"
-            "<p style='color:#64748b;margin:0 0 6px'>HAL's own sailings where 4+ competitor sailings leave the same port within "
-            "&plusmn;1 day, or the cargo cut-off is within 3 days. URGENT = both. Sailings whose cut-off has "
-            "already passed are left out. HAL's own cut-off data is from 13 Sep and can be incomplete.</p>")
-    if not rows:
-        return head + "<p>No HAL sailing needs special attention in this period.</p>"
-    rows.sort(key=lambda r: (r[0], r[1] != "URGENT"))
-    return (head + "<table style='border-collapse:collapse'>"
-            "<tr style='text-align:left;color:#64748b'><th style='padding:2px 10px 2px 0'>ETD</th>"
-            "<th style='padding:2px 10px 2px 0'>Level</th><th style='padding:2px 10px 2px 0'>HAL vessel</th>"
-            "<th>Why</th></tr>" + "".join(r[2] for r in rows) + "</table>")
+            when = f"{_th_date(cut.date())} {cut:%H:%M}"
+            why.append(f"ปิดรับตู้ในอีก {hrs} ชม. ({when})" if hrs < 48 else f"ปิดรับตู้ {when}")
+        flagged.append({"x": x, "etd": etd, "port": port(x), "why": why, "urgent": r_comp and r_close,
+                        "also": [c for c in x["carriers"] if c != "HAL"]})
+
+    groups = []                                     # same vessel, both ports (ETDs within 3 days) -> one row
+    for f in sorted(flagged, key=lambda f: (f["x"]["vessel"], f["etd"])):
+        g = groups[-1] if groups else None
+        if g and g["vessel"] == f["x"]["vessel"] and (f["etd"] - g["items"][-1]["etd"]).days <= 3:
+            g["items"].append(f)
+        else:
+            groups.append({"vessel": f["x"]["vessel"], "items": [f]})
+    for g in groups:
+        g["urgent"] = any(i["urgent"] for i in g["items"])
+        g["etd"] = min(i["etd"] for i in g["items"])
+    groups.sort(key=lambda g: (not g["urgent"], g["etd"]))
+    n_urgent = sum(1 for g in groups if g["urgent"])
+
+    th = "padding:6px 10px;text-align:left;font-size:12px;color:#64748b;border-bottom:2px solid #e2e8f0"
+    td = "padding:8px 10px;border-bottom:1px solid #e2e8f0;vertical-align:top"
+    pill = lambda text, col: (f"<span style='background:{col};color:#fff;padding:2px 8px;border-radius:10px;"
+                              f"font-size:11px;font-weight:700;white-space:nowrap'>{text}</span>")
+    sell_rows = ""
+    for g in groups:
+        bg = "#fef2f2" if g["urgent"] else "#fff"
+        badge = pill("ด่วน", "#dc2626") if g["urgent"] else pill("ควรขาย", "#f59e0b")
+        also = sorted({c for i in g["items"] for c in i["also"]})
+        lines = "".join(
+            f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {_TH_MON[i['etd'].month]}</b> &ndash; "
+            f"{'; '.join(i['why'])}</div>" for i in g["items"])
+        sell_rows += (
+            f"<tr style='background:{bg}'><td style='{td};white-space:nowrap'>{badge}</td>"
+            f"<td style='{td};min-width:150px'><b style='font-size:14px'>{g['vessel']}</b>"
+            + (f"<div style='color:#64748b;font-size:12px'>ขายร่วมกับ: {', '.join(also)}</div>" if also else "")
+            + f"</td><td style='{td}'>{lines}</td></tr>")
+    if groups:
+        sell = ("<table style='border-collapse:collapse;width:100%'>"
+                f"<tr><th style='{th}'>ระดับ</th><th style='{th}'>เรือ HAL</th><th style='{th}'>เหตุผล</th></tr>"
+                + sell_rows + "</table>")
+    else:
+        sell = "<p style='color:#15803d'>ช่วง 14 วันนี้ไม่มีเรือ HAL ที่ต้องรีบขายเป็นพิเศษ</p>"
+
+    # ---- 2) days to watch -------------------------------------------------------------------------
+    def level(n_comp, n_hal):
+        if (n_comp >= 3 and n_hal == 0) or n_comp >= 4:
+            return 2
+        if (n_comp >= 2 and n_hal == 0) or n_comp >= 3:
+            return 1
+        return 0
+
+    watch_rows, n_high = "", 0
+    for i in range(days):
+        d = today + dt.timedelta(days=i)
+        comp, mine = comp_day.get(d, []), own_day.get(d, [])
+        lv = level(len(comp), len(mine))
+        if not lv:
+            continue
+        n_high += lv == 2
+        badge = pill("สูง", "#dc2626") if lv == 2 else pill("เฝ้าระวัง", "#f59e0b")
+        comp_txt = ", ".join(f"{c['vessel']} <span style='color:#94a3b8'>({port(c)})</span>"
+                             for c in sorted(comp, key=lambda c: c["vessel"]))
+        mine_txt = (", ".join(f"{m['vessel']} ({port(m)})" for m in mine) if mine
+                    else "<b style='color:#dc2626'>HAL ไม่มีเรือออก</b>")
+        watch_rows += (
+            f"<tr><td style='{td};white-space:nowrap'><b>{_th_date(d)}</b></td><td style='{td}'>{badge}</td>"
+            f"<td style='{td}'>{comp_txt}<div style='color:#64748b;font-size:12px;margin-top:3px'>"
+            f"คู่แข่ง {len(comp)} เที่ยว</div></td><td style='{td}'>{mine_txt}</td></tr>")
+    if watch_rows:
+        watch = ("<table style='border-collapse:collapse;width:100%'>"
+                 f"<tr><th style='{th}'>วันที่ (ETD)</th><th style='{th}'>ระดับ</th><th style='{th}'>เรือคู่แข่ง</th>"
+                 f"<th style='{th}'>เรือ HAL วันนั้น</th></tr>" + watch_rows + "</table>")
+    else:
+        watch = "<p style='color:#15803d'>ช่วง 14 วันนี้ไม่มีวันที่ต้องเฝ้าระวังเป็นพิเศษ</p>"
+
+    # ---- 3) data quality (one line) -----------------------------------------------------------------
+    bad = [s["Source"] for s in statuses if s["Status"] != "ok"]
+    saved = [s["Source"] for s in statuses if s["Status"] == "ok"
+             and ("not a live pull" in (s.get("Detail") or "") or ".txt" in (s.get("Detail") or ""))]
+    ok_n = sum(1 for s in statuses if s["Status"] == "ok")
+    data = f"ดึงข้อมูลได้ {ok_n}/{len(statuses)} สายเรือ"
+    if saved:
+        data += f" &middot; ใช้ข้อมูลที่เก็บไว้ (อาจไม่เป็นปัจจุบัน): {', '.join(saved)}"
+    if bad:
+        data += f" &middot; <span style='color:#dc2626'>ดึงไม่ได้: {', '.join(bad)}</span>"
+
+    # ---- assemble -------------------------------------------------------------------------------------
+    box = lambda n, label, col: (
+        f"<td style='padding:10px 18px;background:#f8fafc;border-radius:10px;text-align:center'>"
+        f"<div style='font-size:26px;font-weight:700;color:{col}'>{n}</div>"
+        f"<div style='font-size:12px;color:#64748b'>{label}</div></td><td style='width:10px'></td>")
+    banner = ""
+    if result == "failed":
+        banner = ("<p style='background:#fef2f2;color:#b91c1c;padding:10px 12px;border-radius:8px'>"
+                  "<b>อัปเดตอัตโนมัติไม่สำเร็จ</b> ข้อมูลด้านล่างอาจเป็นของรอบก่อน และเว็บยังแสดงข้อมูลเดิม "
+                  "(รายละเอียดอยู่ใน update_log.txt บนเครื่องที่รันงาน)</p>")
+    elif result == "nochange":
+        banner = "<p style='color:#64748b'>อัปเดตแล้ว ข้อมูลไม่เปลี่ยนจากรอบก่อน</p>"
+    html_body = (
+        "<div style='font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:14px;color:#0f172a;max-width:760px'>"
+        "<div style='font-size:18px;font-weight:700'>ตารางเรือ กรุงเทพฯ / แหลมฉบัง &rarr; โฮจิมินห์</div>"
+        f"<div style='color:#64748b;margin-bottom:12px'>สรุปประจำวัน {_th_date(today)} {today.year + 543} "
+        f"เวลา {now:%H:%M} &middot; {len(merged)} เที่ยวเรือ (รวมเรือซ้ำแล้ว)</div>{banner}"
+        "<table style='border-collapse:separate'><tr>"
+        + box(n_urgent, "เรือ HAL ที่ต้องรีบขาย (ด่วน)", "#dc2626" if n_urgent else "#15803d")
+        + box(len(groups), "เรือ HAL ที่ต้องดูแลทั้งหมด", "#f59e0b" if groups else "#15803d")
+        + box(n_high, "วันที่คู่แข่งหนาแน่น (สูง)", "#dc2626" if n_high else "#15803d")
+        + "</tr></table>"
+        "<h3 style='margin:22px 0 6px'>1. เรือ HAL ที่ควรรีบขาย (14 วันข้างหน้า)</h3>" + sell +
+        "<h3 style='margin:22px 0 6px'>2. วันที่ต้องเฝ้าระวัง &ndash; เรือคู่แข่ง (14 วันข้างหน้า)</h3>" + watch +
+        "<p style='margin-top:22px'>เปิดหน้า dashboard เต็ม: <a href='https://palm0105.github.io/all-schedule-hcm/dashboard.html'>"
+        "palm0105.github.io/all-schedule-hcm</a><br><span style='color:#64748b'>หรือเปิดไฟล์ HTML ที่แนบมากับเมลนี้ "
+        "(ปุ่ม Refresh ในไฟล์แนบใช้ไม่ได้)</span></p>"
+        f"<p style='color:#64748b;font-size:12px;border-top:1px solid #e2e8f0;padding-top:10px'>{data}<br>"
+        "วิธีคัดเรือ: &laquo;ควรขาย&raquo; = มีเรือคู่แข่งออกจากท่าเดียวกัน 4 เที่ยวขึ้นไปภายใน ±1 วัน หรือปิดรับตู้ภายใน 3 วัน "
+        "&laquo;ด่วน&raquo; = ครบทั้งสองข้อ (ไม่แสดงเรือที่ปิดรับตู้แล้ว) &middot; เรือคู่แข่ง = เรือที่ HAL จองไม่ได้ "
+        "&middot; ข้อมูล cut-off ของ HAL เก็บไว้เมื่อ 13 ก.ย. อาจไม่ครบ<br>"
+        "ข้อความนี้ส่งอัตโนมัติจากระบบอัปเดตตารางเรือ HCM</p></div>")
+    if result == "failed":
+        subject = f"[HCM] อัปเดตล้มเหลว – {_th_date(today)}"
+    else:
+        parts = []
+        if n_urgent:
+            parts.append(f"เรือ HAL ต้องรีบขาย {n_urgent} ลำ")
+        if n_high:
+            parts.append(f"วันคู่แข่งหนาแน่น {n_high} วัน")
+        subject = f"[HCM] {_th_date(today)} – " + (" | ".join(parts) if parts else "ไม่มีรายการเร่งด่วน")
+    return subject, html_body
 
 
 # --------------------------------------------------------------------------- #
@@ -2262,7 +2326,19 @@ def main():
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help=f"port for --serve (default {DEFAULT_PORT})")
     ap.add_argument("--no-browser", action="store_true", help="--serve: do not open a browser automatically")
+    ap.add_argument("--mail-body", choices=["ok", "nochange", "failed"],
+                    help="write output/mail_subject.txt + output/mail_body.html from the cached data and exit")
     args = ap.parse_args()
+
+    if args.mail_body:
+        cache = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        subject, body = build_mail(merge_sailings(cache["records"]), cache["statuses"], dt.datetime.now(),
+                                   args.mail_body)
+        OUT_DIR.mkdir(exist_ok=True)
+        (OUT_DIR / "mail_subject.txt").write_text(subject, encoding="utf-8")
+        (OUT_DIR / "mail_body.html").write_text(body, encoding="utf-8")
+        print(subject)
+        return
 
     start = dt.date.fromisoformat(args.start)
     end = dt.date.fromisoformat(args.end)
@@ -2343,8 +2419,6 @@ def main():
     CACHE_FILE.write_text(json.dumps(
         {"start": start.isoformat(), "end": end.isoformat(),
          "records": records, "statuses": statuses, "merged": len(merged),
-         "watch_html": build_watch_html(merged, dt.date.today()),
-         "sell_html": build_sell_html(merged, dt.datetime.now()),
          "generated": dt.datetime.now().isoformat()},
         ensure_ascii=False, indent=1), encoding="utf-8")
 

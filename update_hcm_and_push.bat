@@ -29,7 +29,13 @@ echo Pushed OK >> update_log.txt
 :mail
 set DRAFT=
 if "%HCM_MAIL_DRAFT%"=="1" set DRAFT=-DraftOnly
-powershell -NoProfile -File "%~dp0send_update_mail.ps1" -Result %RESULT% %DRAFT% < nul >> update_log.txt 2>&1
+"%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe" build_hcm_schedule.py --mail-body %RESULT% < nul >> update_log.txt 2>&1
+if errorlevel 1 (
+  echo MAIL BODY FAILED >> update_log.txt
+  goto done
+)
+powershell -NoProfile -File "%~dp0send_update_mail.ps1" %DRAFT% < nul >> update_log.txt 2>&1
 if errorlevel 1 echo MAIL FAILED >> update_log.txt
+:done
 if "%RESULT%"=="failed" exit /b 1
 exit /b 0
