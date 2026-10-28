@@ -2030,6 +2030,16 @@ def serve(port: int, open_browser: bool = True, extra_args: list[str] | None = N
 # --------------------------------------------------------------------------- #
 #  main                                                                      #
 # --------------------------------------------------------------------------- #
+HUB_LINK = ('<a href="./" style="position:fixed;top:10px;left:10px;z-index:9999;padding:6px 12px;'
+            'border-radius:999px;background:rgba(15,23,42,.85);color:#fff;font:600 12px/1 system-ui,sans-serif;'
+            'text-decoration:none;box-shadow:0 2px 8px rgba(0,0,0,.25)">← SERVICE LINE</a>')
+
+
+def with_hub_link(html):
+    """Published (GitHub Pages) copy only: add a link back to the SERVICE LINE hub."""
+    return html.replace("<body>", "<body>" + HUB_LINK, 1)
+
+
 def main():
     today = dt.date.today()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2123,7 +2133,7 @@ def main():
 
     # copy for GitHub Pages (dashboard.html in the repo root)
     docs_page = PAGES_FILE
-    docs_page.write_text(htmlf.read_text(encoding="utf-8"), encoding="utf-8")
+    docs_page.write_text(with_hub_link(htmlf.read_text(encoding="utf-8")), encoding="utf-8")
     CACHE_FILE.write_text(json.dumps(
         {"start": start.isoformat(), "end": end.isoformat(),
          "records": records, "statuses": statuses,
