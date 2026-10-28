@@ -950,9 +950,19 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
                 return v
         return ""
 
+    def svc_of(x):
+        """service code (KST, KHS1, NTX ...) from HAL's own row, else the first row that has one"""
+        for o in sorted(x["offers"], key=lambda o: o["source"] != "HAL"):
+            v = (o.get("service") or "").strip()
+            if v:
+                return v
+        return ""
+
     def voy_html(x, own_ship=False):
         v = voy_of(x, own_ship)
-        return f" <span style='color:#475569;font-size:12px'>Voy {v}</span>" if v else ""
+        sv = svc_of(x) if own_ship else ""
+        txt = " &middot; ".join(t for t in (f"Voy {v}" if v else "", sv) if t)
+        return f" <span style='color:#475569;font-size:12px'>{txt}</span>" if txt else ""
 
     def share_note(x):
         """carriers that sell this sailing besides HAL ("shared with ...") as small grey text"""
@@ -1045,11 +1055,20 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             also = sorted({c for i in g["items"] for c in i["also"]})
             lines = "".join(
                 f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b>"
-                f"{voy_html(i['x'], True)}{space_tag(i['sp'])} &ndash; {'; '.join(i['why'])}</div>"
+                f"{space_tag(i['sp'])} &ndash; {'; '.join(i['why'])}</div>"
                 for i in g["items"])
+            vs = []
+            for i in g["items"]:
+                pair = (voy_of(i["x"], True), svc_of(i["x"]))
+                if pair not in vs:
+                    vs.append(pair)
+            vs_txt = " / ".join(
+                " &middot; ".join(t for t in (f"Voyage {v}" if v else "", f"Service {sv}" if sv else "") if t)
+                for v, sv in vs)
             sell_rows += (
                 f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
                 f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
+                f"<div style='color:#334155;font-size:12px'>{vs_txt}</div>"
                 + (f"<div style='color:#64748b;font-size:12px'>shared with: {', '.join(also)}</div>" if also else
                    "<div style='color:#94a3b8;font-size:12px'>HAL only</div>")
                 + f"</td><td bgcolor='{bg}' style='{td}'>{lines}</td></tr>")
