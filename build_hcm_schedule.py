@@ -901,6 +901,22 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
         txt = f"{bal} TEU left"
         return f" <b style='color:{col};font-size:12px'>{lv}</b><span style='color:#64748b;font-size:12px'> ({txt})</span>"
 
+    def voy_of(x, own_ship=False):
+        """voyage number: SVMS's for HAL ships when matched, else HAL's own row, else the first carrier row that has one"""
+        if own_ship:
+            sp = space_for(x)
+            if sp and sp.get("voyage"):
+                return sp["voyage"]
+        for o in sorted(x["offers"], key=lambda o: o["source"] != "HAL"):
+            v = (o.get("voyage") or "").strip()
+            if v:
+                return v
+        return ""
+
+    def voy_html(x, own_ship=False):
+        v = voy_of(x, own_ship)
+        return f" <span style='color:#475569;font-size:12px'>Voy {v}</span>" if v else ""
+
     def share_note(x):
         """carriers that sell this sailing besides HAL ("shared with ...") as small grey text"""
         others = [c for c in x["carriers"] if c != "HAL"]
@@ -987,7 +1003,8 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
             also = sorted({c for i in g["items"] for c in i["also"]})
             lines = "".join(
                 f"<div style='margin-bottom:4px'><b>{i['port']} {i['etd'].day} {i['etd']:%b}</b>"
-                f"{space_tag(i['sp'])} &ndash; {'; '.join(i['why'])}</div>" for i in g["items"])
+                f"{voy_html(i['x'], True)}{space_tag(i['sp'])} &ndash; {'; '.join(i['why'])}</div>"
+                for i in g["items"])
             sell_rows += (
                 f"<tr bgcolor='{bg}'><td bgcolor='{bg}' style='{td};white-space:nowrap'>{badge}</td>"
                 f"<td bgcolor='{bg}' style='{td};min-width:150px'><b style='font-size:15px'>{g['vessel']}</b>"
@@ -1027,13 +1044,13 @@ def build_mail(merged: list[dict], statuses: list[dict], now: dt.datetime, resul
                         + ", ".join(f"{port(m)} {dt.date.fromisoformat(m['etd_date']).day} "
                                     f"{dt.date.fromisoformat(m['etd_date']):%b}" for m in hal_too[:3])
                         + "</b>") if hal_too else ""
-            return (f"<div style='margin-bottom:4px'><b>{c['vessel']}</b> ({port(c)}) "
+            return (f"<div style='margin-bottom:4px'><b>{c['vessel']}</b> ({port(c)}){voy_html(c)} "
                     f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{hal_note}</div>")
 
         def mine_line(m):
             others = share_note(m)
             tag = f"shared with {', '.join(others)}" if others else "HAL only"
-            return (f"<div style='margin-bottom:4px'><b>{m['vessel']}</b> ({port(m)}) "
+            return (f"<div style='margin-bottom:4px'><b>{m['vessel']}</b> ({port(m)}){voy_html(m, True)} "
                     f"<span style='color:#64748b;font-size:12px'>&middot; {tag}</span>{space_tag(space_for(m))}</div>")
 
         comp_txt = "".join(comp_line(c) for c in sorted(comp, key=lambda c: (c["vessel"], port(c))))
